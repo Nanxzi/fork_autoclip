@@ -1,9 +1,9 @@
 # AutoClip — 项目状态 / 进度 / 计划
 
-> 更新：2026-05-30 · 分支 `main`（领先 origin 若干 commit，未 push）
+> 更新：2026-09-06 · 基于 `main@a5c20ae`（**v1.2.1 已发布**：Release 含 macOS arm64 DMG 223 MB + Windows x64 安装包 145 MB）
 
 AutoClip 是一款 AI 视频切片工具：输入 B站/YouTube 链接或本地视频，自动识别精彩片段、
-生成切片与合集。本文是项目的当前状态与路线图的单一事实来源。
+生成切片与合集。本文是项目当前状态与近期计划的单一事实来源；长期规划见 `ROADMAP.md`。
 
 ---
 
@@ -11,100 +11,197 @@ AutoClip 是一款 AI 视频切片工具：输入 B站/YouTube 链接或本地�
 
 | 层 | 技术 | 目录 |
 |----|------|------|
-| 后端 | FastAPI + Celery（桌面模式用本地队列）+ SQLite | `backend/` |
+| 后端 | FastAPI + Celery（桌面模式用本地线程）+ SQLite | `backend/` |
 | 前端 | React + TypeScript + Ant Design + Vite | `frontend/` |
 | 桌面壳 | Tauri 2 + Rust | `src-tauri/` |
-| LLM | OpenAI / Gemini(google-genai) / 通义千问(dashscope) / 硅基流动 | `backend/core/llm_providers.py` |
+| LLM | OpenAI 及一切 OpenAI 兼容接口（自定义 base_url）/ Gemini(google-genai) / 通义千问(dashscope) / 硅基流动 / 本地预设 Ollama、LM Studio | `backend/core/llm_providers.py`、`llm_manager.py`、`local_presets.py` |
+| CLI / MCP | `autoclip` 命令行 + MCP server（stdio），不起 FastAPI / Celery 直接跑流水线 | `backend/cli.py`、`mcp_server.py`、`services/local_runner.py` |
 
-三种交付形态：**Docker 部署**、**本地脚本启动**（`start_autoclip.sh`）、**桌面客户端**（macOS DMG）。
-近期工作集中在桌面客户端。
-
----
-
-## 二、当前进度（已完成且验证）
-
-桌面客户端打包链路从"打不出能用的包"做到了**端到端可装可用**：
-
-1. **统一打包路线** —— 砍掉历史上互相打架的 PyInstaller / prepare_resources 两条死路线，
-   只保留 python-build-standalone（PBS）：便携 Python + 后端源码 + 静态 ffmpeg/ffprobe 全部打进
-   `.app`，用户机器零依赖。脚本：`scripts/build_macos_arm.sh`。
-
-2. **修好一连串发版阻断 bug**（都已实测验证）：
-   - **ffmpeg 不可用**：原来打包的是 homebrew 动态版（57 个 `/opt/homebrew` 依赖），换成静态
-     arm64 ffmpeg+ffprobe（零非系统依赖），并让 Rust 启动器通过 `AUTOCLIP_FFMPEG_PATH`/
-     `AUTOCLIP_FFPROBE_PATH` 指向内置二进制。
-   - **黑屏**：Vite 把 React/antd 拆成两个 vendor chunk，antd 先于 React 初始化 → `createContext`
-     报错、React 不挂载。去掉手动分包后正常渲染。
-   - **项目列表一直转圈**：`/api/v1/projects/` 因缺 `pytz` 报 500。补齐 `pytz` 及 LLM SDK
-     (`openai`/`google-genai`/`dashscope`) 到 `requirements.txt`。
-   - **依赖漂移护栏**：构建期 AST 扫描后端所有 import，缺任何一个直接 fail，杜绝"开发能跑、打包就 500"。
-
-3. **CI 统一** —— 7 个从未成功的桌面构建工作流 → 1 个 `desktop-build.yml`（跑 PBS 脚本，
-   `v*` tag 自动挂 Release）。保留 `ci.yml`（测试）、`i18n-sync.yml`（文档）、
-   `nightly-desktop-smoke.yml`（后端冒烟）。
-
-4. **仓库清理** —— 删掉约 30 个废弃脚本、嵌套鬼目录、94M 旧 PyInstaller 备份等；
-   `scripts/` 只剩 4 个活脚本；重写 `scripts/README.md` 与 `BUILD_GUIDE.md`。
-
-5. **Gemini SDK 迁移** —— 从已停更的 `google-generativeai` 迁到统一的 `google-genai`。
-
-**产物**：`src-tauri/target/release/bundle/macos/AutoClip Desktop_1.0.0_aarch64.dmg`（~260M）。
+四种交付形态：**桌面客户端**（macOS arm64 DMG 主推；Windows x64 安装包 v1.2.1 起提供，尚未在真机验证）、**Docker 部署**（README 推荐路径）、
+**本地脚本启动**（`start_autoclip.sh`）、**CLI / MCP**（`pip install -e .`，面向开发者与 agent，`docs/CLI_AND_MCP.md`）。
 
 ---
 
-## 三、遗漏 / 未验证（按优先级）
+## 二、当前状态
 
-> 已闭环（不再是遗漏）：**完整切片流程**已在打包后的 app 里端到端跑通（粘 B站 链接 → 下载 →
-> 字幕 → DashScope 分析 → 评分 → 标题 → 切割 → 出 5 个切片，79s 完成）；**无字幕视频**现在可
-> 在「设置 → 语音转写」按需安装 faster-whisper 自动转写（实测安装 214MB、转写出 SRT）。
+### 已完成
+- **v1.2.0（2026-06-03）**：桌面端 DMG 端到端可用（内置便携 Python + 静态 ffmpeg + 按需安装 faster-whisper），
+  `desktop-build.yml` 在 tag 上跑通并自动挂 Release；v1.2.0 DMG 已有 2000+ 下载。
+- **PostHog 匿名埋点** + 隐私政策 + 设置页开关（`docs/ANALYTICS.md`、`docs/PRIVACY*.md`）。
+- **Calm Premium 视觉系统**落地（`DESIGN.md`）。
+- Nightly 后端冒烟（`nightly-desktop-smoke.yml`）持续全绿。
+- **开发者形态（2026-09-07）**：
+  - `autoclip run video.mp4 --provider ollama` 一条命令出片；`list / show / providers / doctor / mcp` 子命令；`--json` 给脚本 / agent。
+    与桌面应用共用数据目录和 SQLite，CLI 出的项目桌面首页直接可见。
+  - MCP server（`autoclip mcp`）7 个工具：`clip_video`（同步 + 进度通知）、`start_clip_job` / `get_job_status`、`get_project`、`list_projects`、`list_providers`、`check_environment`；
+    已用 `mcp` 2.x stdio 客户端实测。Agent skill 在 `skills/autoclip/SKILL.md`。
+  - 本地模型预设 Ollama / LM Studio：设置页下拉可选、自动列出 `/v1/models`、隐藏 key；后端 `local_presets.py` 把预设解析为 `openai` + `base_url`。
+  - 顺带修复：`httpx` 对 localhost 走系统代理（Clash）导致 502 → `is_local_url()` 对本地地址 `trust_env=False`；
+    `apiConfig.notifyListeners` 遍历时被 listener 自删导致设置页首屏偶发不请求 `getCurrentProvider`。
+  - 单测 `tests/test_local_presets.py`、`tests/test_cli.py`（共 24 条）；**尚未用真实视频端到端跑过 `autoclip run`**（见 v1.3 todo）。
+- **出片质量 + 可发布成片（2026-09-07）**：方案 `docs/QUALITY_AND_PUBLISH_PLAN.md`。
+  - 时长画像 `DurationProfile`（短/中/长）注入 step1/2 提示词，短视频不再套「最小 90 秒 / 目标 3–6 分钟」。
+  - `refine_timeline`：对齐字幕 cue、时长上下限、重叠合并；`quality_report.json` 落盘。
+  - 评分兜底：数量不匹配按 outline 对齐；低于阈值时保底 top-K（#11 切片为 0）。
+  - 桌面 adapter 终于传入 `prompt/<category>/`。`AUTOCLIP_LLM_CACHE_DIR` 录制/回放。`python -m backend.eval` 约束回归（`backend/eval/cases/short-synthetic` 已过）。
+  - 发布导出：`publish_export.py`（9:16 blur/crop、烧字幕、标题卡）；API `POST .../clips/{id}/export`；`autoclip export`；MCP `export_clip`；切片卡片「导出」Dialog。默认流水线仍是 16:9 copy。
+  - **尚未用真实 5 分钟视频跑完整流水线对照**；竖屏预设只单测了 `original` 重编码。
 
-### 中
-- **签名/公证**：目前 ad-hoc 签名，未做 Apple Developer ID 签名 + 公证，用户首次必须右键打开。
-- **仅 arm64**：没有 Intel mac / Windows / Linux 包。
-- **依赖未锁版本**：`requirements.txt` 多数包没固定版本，跨时间/跨机器构建有漂移风险。
-- **构建慢**：每次构建都重装全部 pip 依赖（PBS python 被 `rm -rf` 重建）。可缓存已装好的运行时。
-- **Gemini 迁移未对真实 API 验证**：代码与新版 google-genai SDK 接口已对齐并能 import，但没有
-  Gemini key 实际调用过（DashScope 路径已实跑验证）。
+### v1.2.1（2026-09-06 打 tag）
+问题根源：README 推荐的 `docker compose` 路径从 2025-09 起就没能跑通过一次完整处理
+（issue #88 给出 7 条可复现问题，全部核验属实），是 issue 区大量"用不了"的来源。#89 修复：
+1. `.dockerignore` 放行 `docker-entrypoint.sh` / `docker-dev-entrypoint.sh`（镜像此前无法构建）
+2. 新增 `.gitattributes`，shell 脚本强制 LF（Windows 克隆后容器起不来）
+3. 清理 `youtube.py` / `fix_project_thumbnails.py` / `SettingsPage.tsx` 里的 `/Users/zhoukk` 硬编码
+4. Docker 基础镜像 3.9 → 3.11（yt-dlp 要求）
+5. 字幕语言默认 `zh-Hans,zh,en`，`AUTOCLIP_YT_SUBTITLE_LANGS` 可覆盖（避免 429）
+6. `task_submission_utils` 去掉硬编码 localhost 的 Redis 诊断（Docker 下项目提交即失败）
+7. compose / dev compose / `start_autoclip.sh` 的 worker 统一 `-Q celery,processing,video,notification,upload`
+   （之前 Docker 下任务永远无人消费）
+8. `_build_full_input` list 输入 JSON 序列化（#53）
+9. CI 新增 `docker-smoke` job 守住以上路径；版本号对齐到 1.2.1；删除死代码 `youtube_improved.py`
 
-### 低
-- **前端单 bundle ~1.5MB**：去掉分包后是一个大 chunk，桌面端无所谓，若以后也跑 Web 可考虑按路由懒加载。
-- **单步重试 `submit_single_step_task`** 仍走 Redis send_task（桌面没改），目前没有入口用到；
-  整条流水线的 `.delay()` 已由 DesktopAwareTask 接管本地执行。
+随后合入：
+- **#90** 清掉 6 个 `NodeJS.Timeout` 类型错误，`npm run typecheck` 在 CI 阻断
+- **#91** 外部 PR #85（日志 utf-8）、#84（Gemini `-latest` 别名）、#83（youtube.py 五连修）以 cherry-pick 合入（保留原作者署名；原 PR 需手动关闭）
+- **#94** `requirements.txt` 直接依赖全部锁定
+- **#92** OpenAI 兼容 `base_url`（#72 #57，替代 #78）。**顺带发现并修复：设置页选的 provider 从来没被持久化，流水线一直用 dashscope**；
+  LLMManager 现按 settings.json mtime 热重载，且支持 Docker 环境变量（`LLM_PROVIDER` / `OPENAI_BASE_URL` / `API_*_API_KEY`）
+- **#93** Windows x64 打包脚本 + workflow。`workflow_dispatch` 只勾 Windows 在 `windows-latest` 上一次通过：
+  安装包 145 MB，全程 ~22 min（`cargo install tauri-cli` 冷编译 8 min + 打包 13 min；rust-cache 首次为空，后续会快）。
+  **尚未装到真机验证**（见下方 todo）
+
+### 仍未完成（ROADMAP Phase 0）
+| 项 | 状态 |
+|---|---|
+| Apple Developer ID 签名 + 公证 | 未做，`signingIdentity: null`，用户需右键打开 |
+| 多平台包（Windows / Intel mac / Linux） | Windows x64 已在 runner 出包（#93），随 v1.2.1 Release 发布，**真机未验证**；Intel mac / Linux 未做 |
+| Sentry 崩溃上报 | 未接 |
+| Tauri updater 自动更新 | 未接 |
+| 依赖锁版本 / 构建缓存 | 直接依赖已锁定（#94）；PBS + ffmpeg 下载有 actions/cache，Rust 有 rust-cache |
+| `ruff` 在 CI 中仍是 `continue-on-error` | typecheck 已阻断（#90）；ruff 存量 ~130 条多为风格规则，需先收敛规则集再阻断 |
 
 ---
 
-## 四、未来计划（路线图）
+## 三、GitHub 待办快照（2026-09-06）
 
-1. **正式签名与公证**：申请 Apple Developer ID，签名 + notarize，消除"右键打开"。
-2. **多平台打包**：把 `build_macos_arm.sh` 的 runner / PBS URL / ffmpeg URL / tauri target 参数化，
-   扩到 Intel mac、Windows、Linux（PBS 与静态 ffmpeg 都有对应平台版本；faster-whisper 本就跨平台）。
-3. **依赖锁定**：固定 `requirements.txt` 版本（或引入 lock 文件），保证可复现构建。
-4. **构建提速**：缓存 PBS python + 已装依赖，避免每次重装。
-5. **自动 UI 冒烟**：在 CI 里加一步，验证打包后的前端能挂载（而不仅是后端接口通）。
-6. 产品向：B站上传、字幕编辑、批量处理、云端同步（见 RELEASE_CHECKLIST.md 后续计划）。
+### 外部 PR（2026-09-06 全部处理完，当前 0 个 open）
+原则：**外部 PR 谨慎对待，能不合入就不合入**；采纳的改动以 cherry-pick 进自己的 PR 并保留署名。
+
+| PR | 处理 |
+|----|------|
+| #85 #84 #83 | 已 cherry-pick 进 #91 随 v1.2.1 发布，原 PR 留言关闭 |
+| #78 Atlas Cloud provider | 被 #92 自定义 base_url 替代，留言关闭 |
+| #79 README star chart | 关闭：官方 `api.star-history.com` 实测正常，PR 是把图片源换到不明第三方域名 |
+| #76 TakoAPI 徽章 | 关闭 |
+| #86 Windows `.vbs` 开发态启动器 | 关闭：Windows 安装包已随 v1.2.1 提供 |
+| #82 1080p60 + 全英文 UI + 迁移脚本（49 文件） | 关闭：不可 review，且全英文与产品方向不符；欢迎单独提 1080p60 小 PR |
+| #75 TwelveLabs Pegasus 评分 | 关闭：Step 3 评分后端可插拔接口定好之前不接任何具体厂商；v1.4 做接口时回引 |
+
+### Issue 治理（2026-09-06 已执行）
+label 体系：默认 9 个 + 新增 `docker` / `windows` / `feature`。**置顶帖 #96**「当前状态 / 已知问题 / 怎么反馈」，
+"用不了"类 issue 统一回复到它。open 从 55 → 28（不含 #96），除分享贴 #40 #56 外全部有 label。
+
+- **已关闭（v1.2.1 修复）**：#88 #47 #50 #53 #54 #55 #62；#51 #52（dev compose，措辞留了余地）
+- **已关闭（not planned，回复引导到 #96）**："用不了"类 #7 #26 #30 #31 #32 #39 #42 #43 #59；噪音 #3 #13 #23 #25 #34 #41 #58 #60 #80 #87
+- **仍 open · Docker/部署**（`docker,bug`）：#1 #4 #5 #6 #9 #15 #21 #33 → 老帖，可在 v1.2.1 Release 出来后统一引导重试再关
+- **仍 open · Windows**（`windows`）：#2 #19 #35 → 可引导到 v1.2.1 Release 的 Windows 包后关闭（#73 已关）
+- **仍 open · 功能请求**（`feature`）：#67 FunASR/SenseVoice、#45 阿里云国际（#57 #72 已由 #92 关闭）
+- **仍 open · 待复现的产品 bug**（`bug`）：#11 切片为 0、#24 进度错误、#38 缩略图、#20 导入报错、#27 加载失败、#77 API 连接测试失败
+- **仍 open · question**：#10 #14 #18 #36；分享贴 #40 #56 不动
+
+### 反馈收件箱（2026-09-07 搭好，替代 QQ 群 / 个人飞书）
+原则：不再让用户来加维护者，反馈自己流到一个每周看一次的地方。三个入口：
+
+| 入口 | 面向 | 实现 | 自动化 |
+|------|------|------|--------|
+| **飞书表单** | 不用 GitHub 的普通用户 | 多维表格「AutoClip 用户反馈」（个人账号 `my.feishu.cn`，base `EuYLb3lQ2awwDFsTkDXchabsnbd`，表「反馈」）。公开表单 `https://my.feishu.cn/share/base/shrcn8hKUG2icIJLpNry6uWVNJe`，字段：类型 / 反馈内容 / 平台 / 版本 / 截图日志 / 联系方式；内部字段 状态 / 处理备注 / 提交时间 | 自动化 `wkfTMIXp3h6zTWNk`：新记录 → 状态置「新」→ 飞书消息通知（带「打开记录」按钮） |
+| **GitHub Issue Forms** | 开发者 | `.github/ISSUE_TEMPLATE/`：bug（版本 / 平台 / 模型必填）、feature、config.yml 联系链接（#96 / Discussions / 官网表单）。Discussions 已开启 | `.github/workflows/issue-hygiene.yml`：新 issue 自动回复节奏；`needs-info` 14+7 天自动关；60+14 天 stale；`pinned` / `feature` 不自动关 |
+| **官网 `#feedback`** | 所有人 | `autoclip_intro` FAQ 区的「提交反馈」卡，指向飞书表单 + Issues / Discussions；QQ / 飞书二维码已撤 | — |
+
+- 新 label：`needs-triage`（模板自动打）/ `needs-info` / `stale` / `pinned`（#96 已打）。
+- #96 已加「怎么反馈」小节。
+- 飞书 CLI：本机 `lark-cli` profile `personal`（app `cli_aa9ce7782ea39bcf`）；yahaha 账号下误建的同名空表可删。
+- **应用内反馈**（2026-09-07 做完）：`frontend/src/analytics/feedback.ts` + `components/FeedbackDialog.tsx`。入口：设置页「反馈」区、项目卡失败态 `重试 · 反馈`、详情页失败态 `反馈问题`、切片为 0 空态。自动附带 版本 / OS / 架构 / provider / model / 失败阶段 / 错误文本；用户只写一句话 + 可选联系方式。
+  - 事件：`feedback_opened` / `feedback_submitted` / `feedback_dismissed`（PostHog）。若 PostHog 项目里存在名为 **「AutoClip 应用内反馈」**（`FEEDBACK_SURVEY_NAME`，或 `VITE_PUBLIC_POSTHOG_FEEDBACK_SURVEY_ID` 指定 id）的 API 型 Survey（无 UI，第一题自由文本、第二题单选分类），会同时按 PostHog 约定发 `survey shown / sent / dismissed`，结果进 Surveys 面板。**Survey 尚未在 PostHog 后台创建**（不创建也不影响事件采集）。
+  - 用户关闭匿名统计时，对话框不发 PostHog，改为引导到飞书表单。
+- **每周反馈周报**：`scripts/weekly_digest.py`（仅标准库）。合并 GitHub 新 issue（`gh`，或 `GH_TOKEN` REST）+ 飞书表单新条目（本机 `lark-cli` user 身份；云端走 `LARK_APP_ID/SECRET` tenant token，**应用需申请 `base:record:read` 并被加为表格协作者**）+ PostHog `feedback_submitted`（`POSTHOG_PERSONAL_API_KEY` + `POSTHOG_PROJECT_ID`，HogQL）→ markdown → 飞书群机器人 webhook（`FEISHU_WEBHOOK_URL`，可选 `FEISHU_WEBHOOK_SECRET`）。`--json` 给 agent 做主题归纳，`--post --message-file` 发归纳后的版本。本机已验证 GitHub + 飞书两路可读。Cursor Automation（每周一 09:00 跑该脚本并归纳主题）的草稿已备好，待在 Automations 编辑器里配 secrets 后保存。
+
+---
+
+## 四、迭代计划
+
+### v1.2.1 发版
+- [x] 合并 #89 #90 #91 #92 #93 #94
+- [x] `workflow_dispatch` 只勾 Windows 试构建：通过，安装包 145 MB（run 34040814275）
+- [x] 打 `v1.2.1` tag（`a5c20ae`）→ Desktop Build run 34042037733 全绿（Windows 10 min / mac 14 min），
+      Release 两个文件齐：`AutoClip.Desktop_1.2.1_aarch64.dmg`（223 MB）、`AutoClip.Desktop_1.2.1_x64-setup.exe`（145 MB）；标题已改；#73 已关
+- [ ] 把 Windows 安装包装到一台干净 Windows 上验证：能启动、设置页保存 provider、跑通一条本地视频
+      （最可能翻车的点：NSIS 几千个 Python 文件、WebView2 引导、`%APPDATA%\AutoClip` 目录）
+- [ ] 用真实 key 各测一遍 4 个 provider 的「测试连接」+ 一次完整处理（#92 改动了 provider 选择链路，单测覆盖了逻辑但没打过真接口；尤其 openai SDK 已是 3.x）
+- [x] 关闭已修复 issue、关闭外部 PR #83 #84 #85 #78
+- [x] label 体系 + 置顶帖 #96 + "用不了"类统一回复关闭
+- [x] 外部 PR 全部留言关闭（见第三节表格）
+
+### v1.3 · Phase 0 收尾 + 高频需求
+- [ ] Windows 包稳定后：Intel mac（PBS `x86_64-apple-darwin` + osxexperts intel 静态包，脚本只需改两个变量）
+- [ ] Apple Developer ID 签名 + 公证（去掉"右键打开"）；Windows 代码签名（去掉 SmartScreen 警告）
+- [ ] Tauri updater 自动更新；Sentry 崩溃上报
+- [ ] `ruff` 规则集收敛后改为阻断；`requirements-dev.txt` 拆出 pytest（Dockerfile / 桌面包不再装测试依赖）
+- [x] 设置页 provider 卡片 / 彩色 Tag 与 `DESIGN.md` 不符 → 2026-09-07 设置页 / 详情页 / 三种卡片已按 `DESIGN.md`「App Layer」重做（见下）
+- [ ] 首页导入框、`ProjectTaskManager`、`CollectionPreviewModal` / `CreateCollectionModal`、B 站登录弹窗仍是 AntD 默认件，下一轮按 `frontend/src/ui/` 原语重做
+- [ ] `ProjectCard.tsx` 只做了「去色 + 失败态反馈」的局部修补（仍是 AntD Card + 内联样式），应整体重写成 `ac-card`
+- [ ] Docker 模式下开放设置页（目前 `check_desktop_mode` 直接 400，只能靠 .env）
+- [ ] CLI / MCP 端到端：用一条真实视频跑 `autoclip run --provider ollama --json` 和 MCP `start_clip_job` 轮询到 completed；
+      `autoclip` 装进 Homebrew tap / PyPI（现在只有 `pip install -e .`）；README 首屏放一段 CLI 演示
+- [ ] 桌面应用设置页加「Ollama 未运行」的就地提示（现在只在模型下拉里显示"未检测到模型"）；`min_score` 设置页的值接到 step3（CLI 已能覆盖，桌面端仍是常量 0.7）
+- [ ] 质量对照：拿一条 5 分钟、一条 60 分钟真视频，对比改前提示词口径 vs 现在的 duration profile；把结果补进 `backend/eval/cases/`
+- [ ] 发布导出：抖音 / Shorts / B 站三预设各导一条人工看字幕与标题卡；说话人居中裁切、封面图仍未做
+
+### v1.4 · 产品质量
+- [ ] 切片质量回归集（#59 "5 分钟视频切出 3 个 2 分钟"、#11 切片为 0、#24 进度）
+- [ ] Step 3 评分后端可插拔（接纳 #75 思路）；ASR 后端可插拔（#67）
+- [ ] 之后按 `ROADMAP.md` 进入 Phase 1（Supabase 账号骨架）
 
 ---
 
 ## 五、关键文件
 
-- 打包脚本：`scripts/build_macos_arm.sh`（说明见 `scripts/README.md`、`BUILD_GUIDE.md`）
-- 后端启动器（Rust）：`src-tauri/src/backend_manager.rs`
+- 打包脚本：`scripts/build_macos_arm.sh`、`scripts/build_windows_x64.sh`，共用 `scripts/lib/desktop_build_common.sh`（说明见 `scripts/README.md`）；Windows 资源声明在 `src-tauri/tauri.windows.conf.json`
+- 后端启动器（Rust）：`src-tauri/src/backend_manager.rs`（注入 `AUTOCLIP_DESKTOP_MODE` / `AUTOCLIP_APP_DIR` / ffmpeg 路径 / `AUTOCLIP_APP_VERSION`；Windows 下 `PYTHONUTF8=1`）
 - 桌面后端入口：`backend/desktop_main.py`
+- 任务提交（桌面本地线程 vs Celery）：`backend/utils/task_submission_utils.py`、`backend/core/celery_app.py`（DesktopAwareTask、task_routes）
 - ffmpeg 路径解析：`backend/utils/ffmpeg_utils.py`
-- LLM 提供商：`backend/core/llm_providers.py`
-- 桌面流水线本地执行：`backend/core/celery_app.py`（DesktopAwareTask）、`backend/utils/task_submission_utils.py`
+- LLM 提供商：`backend/core/llm_providers.py`（含 `is_local_url` / `make_openai_http_client` 绕过系统代理）；provider / base_url 选择与热重载：`backend/core/llm_manager.py`；本地预设：`backend/core/local_presets.py`；设置 API：`backend/api/v1/settings.py`（`/local-presets`、`/compatible-models`）
+- CLI / MCP：`backend/cli.py`、`backend/mcp_server.py`，共用 `backend/services/local_runner.py`（环境 / LLM 覆盖 / 项目准备 / 跑流水线 / 结果汇总）；进度监听 `services/simple_progress.py#add_progress_listener`；打包 `pyproject.toml`；Agent skill `skills/autoclip/SKILL.md`；文档 `docs/CLI_AND_MCP.md`
+- 出片质量：`backend/pipeline/quality.py`（时长画像 / refine / 评分兜底），接入 step1–3；回归 `backend/eval/`；方案 `docs/QUALITY_AND_PUBLISH_PLAN.md`
+- 发布导出：`backend/services/publish_export.py`；API `POST /projects/{id}/clips/{id}/export`；CLI `autoclip export`；MCP `export_clip`；前端 `ClipCard` Dialog
+- YouTube 导入：`backend/api/v1/youtube.py`（`AUTOCLIP_YT_SUBTITLE_LANGS`、`AUTOCLIP_YT_CLIENT`）
 - Whisper 运行时（按需安装）：`backend/services/whisper_runtime.py`、`whisper_model_manager.py`、
   前端 `frontend/src/components/SpeechRecognitionConfig.tsx`
-- 前端 API 配置：`frontend/src/utils/apiConfig.ts`
-- CI：`.github/workflows/desktop-build.yml`
+- 前端 UI 原语（`DESIGN.md` App Layer）：`frontend/src/ui/index.tsx` + `ui/ac.css`；已迁移页面：`pages/ProjectDetailPage.tsx`、`pages/SettingsPage.tsx`、`components/ClipCard.tsx`、`CollectionCard.tsx`、`SpeechRecognitionConfig.tsx`
+- 反馈：`frontend/src/analytics/feedback.ts`、`components/FeedbackDialog.tsx`；运行时信息 `analytics/lifecycle.ts#getRuntimeInfo`
+- 周报：`scripts/weekly_digest.py`
+- 本地联调（后端随机端口时）：`BACKEND_URL=http://127.0.0.1:PORT npm run dev`（`vite.config.ts` 代理可被覆盖）
+- Docker：`Dockerfile`、`docker-compose.yml`（四服务共用 `autoclip:local`）、`docker-entrypoint.sh`
+- CI：`.github/workflows/ci.yml`（backend / frontend / docker-smoke）、`desktop-build.yml`（tag 触发）
 
 ## 六、安装（给用户）
 
-1. 双击 DMG → 拖 `AutoClip Desktop` 到 Applications
+**桌面版（推荐）**
+1. 从 Releases 下载 DMG → 拖 `AutoClip Desktop` 到 Applications
 2. **首次右键应用 → 打开**（ad-hoc 签名，绕过 Gatekeeper）
 3. 进设置页填 LLM API key 即可使用
 
-命令行排查后端：
+**Docker**
+```bash
+docker compose up -d --build
+# 前端 http://localhost:3000 · API http://localhost:8000/api/v1/health/
+```
+Linux 宿主机首次启动前先 `mkdir -p data logs uploads && chmod -R 777 data logs uploads`
+（容器以非 root 用户运行，bind mount 目录默认 root 所有）。
+
+命令行排查桌面后端：
 ```bash
 '/Applications/AutoClip Desktop.app/Contents/MacOS/autoclip-desktop'
 # 应看到 Backend started on port: XXXXX / Application startup complete

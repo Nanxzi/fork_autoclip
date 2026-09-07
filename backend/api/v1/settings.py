@@ -61,6 +61,8 @@ class ApiKeys(BaseModel):
 class ApiSettings(BaseModel):
     """API设置"""
     api_keys: ApiKeys = Field(default_factory=ApiKeys, description="API密钥")
+    api_provider: str = Field(default="dashscope", description="当前 LLM 提供商（dashscope / openai / gemini / siliconflow，或本地预设 ollama / lmstudio）")
+    api_base_url: str = Field(default="", description="OpenAI 兼容接口地址；provider=openai 时空为官方地址，本地预设为空时用预设默认地址")
     api_model: str = Field(default="qwen-plus", description="默认模型")
     api_max_tokens: int = Field(default=4096, description="最大Token数")
     api_timeout: int = Field(default=30, description="API超时时间(秒)")
@@ -301,7 +303,9 @@ async def clear_settings(
 
 class TestApiRequest(BaseModel):
     provider: str
-    api_key: str
+    api_key: str = ""
+    base_url: Optional[str] = None   # 仅 openai：兼容接口地址
+    model: Optional[str] = None      # 用哪个模型发测试请求（兼容接口必须是服务端真有的模型名）
 
 @router.post("/test-api")
 async def test_api_connection(request: TestApiRequest):
@@ -309,36 +313,46 @@ async def test_api_connection(request: TestApiRequest):
     check_desktop_mode()
     
     try:
-        # 首先进行基本的API Key格式验证
-        if not request.api_key or len(request.api_key.strip()) < 10:
-            return {
-                "success": False,
-                "error": "API Key为空或过短，请检查输入",
-                "provider": request.provider
-            }
-        
-        # 根据提供商进行格式验证
-        if request.provider in ["dashscope", "openai"]:
-            if not request.api_key.startswith("sk-"):
+        from backend.core.llm_providers import normalize_base_url, OPENAI_OFFICIAL_BASE_URL
+        from backend.core.local_presets import resolve_provider
+        # ollama / lmstudio 预设 → openai + 默认地址
+        requested_provider = request.provider
+        resolved_provider, resolved_base_url, _preset = resolve_provider(request.provider, request.base_url)
+        request.provider = resolved_provider
+        custom_base_url = normalize_base_url(resolved_base_url) if request.provider == "openai" else ""
+        if custom_base_url == OPENAI_OFFICIAL_BASE_URL:
+            custom_base_url = ""
+
+        # 官方服务才做 key 格式校验；自建 OpenAI 兼容服务（Ollama / vLLM 等）常常不需要 key
+        if not custom_base_url:
+            if not request.api_key or len(request.api_key.strip()) < 10:
+                return {
+                    "success": False,
+                    "error": "API Key为空或过短，请检查输入",
+                    "provider": request.provider
+                }
+            if request.provider in ["dashscope", "openai"] and not request.api_key.startswith("sk-"):
                 return {
                     "success": False,
                     "error": f"{request.provider} API Key格式可能不正确，通常以'sk-'开头",
                     "provider": request.provider
                 }
+
+        model_kwargs = {"model_name": request.model} if request.model else {}
         
         # 根据提供商测试API连接
         if request.provider == "dashscope":
             from backend.core.llm_providers import DashScopeProvider
-            provider_instance = DashScopeProvider(api_key=request.api_key)
+            provider_instance = DashScopeProvider(api_key=request.api_key, **model_kwargs)
         elif request.provider == "openai":
             from backend.core.llm_providers import OpenAIProvider
-            provider_instance = OpenAIProvider(api_key=request.api_key)
+            provider_instance = OpenAIProvider(api_key=request.api_key, base_url=custom_base_url or None, **model_kwargs)
         elif request.provider == "gemini":
             from backend.core.llm_providers import GeminiProvider
-            provider_instance = GeminiProvider(api_key=request.api_key)
+            provider_instance = GeminiProvider(api_key=request.api_key, **model_kwargs)
         elif request.provider == "siliconflow":
             from backend.core.llm_providers import SiliconFlowProvider
-            provider_instance = SiliconFlowProvider(api_key=request.api_key)
+            provider_instance = SiliconFlowProvider(api_key=request.api_key, **model_kwargs)
         else:
             raise HTTPException(status_code=400, detail="不支持的API提供商")
         
@@ -349,13 +363,15 @@ async def test_api_connection(request: TestApiRequest):
             return {
                 "success": True,
                 "message": "API连接测试成功",
-                "provider": request.provider
+                "provider": requested_provider
             }
         else:
             # 提供更详细的错误信息
             error_msg = f"API连接测试失败"
             if request.provider == "dashscope":
                 error_msg += "。请检查API Key是否正确，DashScope API Key通常以'sk-'开头"
+            elif request.provider == "openai" and custom_base_url:
+                error_msg += f"。请检查接口地址 {custom_base_url} 是否可达、模型名是否存在，以及该服务是否需要 API Key"
             elif request.provider == "openai":
                 error_msg += "。请检查API Key是否正确，OpenAI API Key通常以'sk-'开头"
             elif request.provider == "gemini":
@@ -413,6 +429,13 @@ async def update_settings(settings: DesktopSettings):
         settings_file = config.paths.data_dir / "settings.json"
         with open(settings_file, 'w', encoding='utf-8') as f:
             json.dump(settings.dict(), f, indent=2, ensure_ascii=False)
+
+        # 让本进程的 LLM 管理器立刻切到新 provider / base_url / 模型（worker 进程靠 mtime 自动重载）
+        try:
+            from backend.core.llm_manager import get_llm_manager
+            get_llm_manager()._reload_if_settings_changed()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"刷新 LLM 管理器失败（下次调用时会自动重载）: {e}")
         
         # 重要：保存主配置文件，确保API key等关键配置被持久化
         from backend.core.desktop_config import save_desktop_config
@@ -652,22 +675,62 @@ async def get_available_models():
         raise HTTPException(status_code=500, detail=f"获取模型列表失败: {str(e)}")
 
 
+@router.get("/local-presets")
+async def get_local_presets():
+    """本地模型预设（Ollama / LM Studio）：默认地址、默认模型、提示文案。"""
+    from backend.core.local_presets import presets_as_dicts
+    return {"presets": presets_as_dicts()}
+
+
+@router.get("/compatible-models")
+async def list_compatible_models(base_url: str = "", provider: str = "openai", api_key: str = ""):
+    """
+    列出一个 OpenAI 兼容服务（Ollama / LM Studio / vLLM…）实际提供的模型（GET {base_url}/models）。
+    设置页选本地预设时用它填模型下拉，免得用户手敲 `qwen2.5:7b` 这种名字。
+    """
+    check_desktop_mode()
+    from backend.core.local_presets import resolve_provider
+    from backend.core.llm_providers import normalize_base_url, is_local_url, OPENAI_COMPATIBLE_PLACEHOLDER_KEY
+    _provider, resolved_base_url, _preset = resolve_provider(provider, base_url)
+    url = normalize_base_url(resolved_base_url)
+    if not url:
+        raise HTTPException(status_code=400, detail="缺少 base_url")
+    try:
+        import httpx
+        headers = {"Authorization": f"Bearer {api_key or OPENAI_COMPATIBLE_PLACEHOLDER_KEY}"}
+        # 本地地址不走系统代理（否则 macOS 上开着 Clash 之类会 502）
+        async with httpx.AsyncClient(timeout=5.0, trust_env=not is_local_url(url)) as client:
+            resp = await client.get(f"{url}/models", headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("data", data) if isinstance(data, dict) else data
+        models = sorted({str(m.get("id") or m.get("name")) for m in items if isinstance(m, dict) and (m.get("id") or m.get("name"))})
+        return {"reachable": True, "base_url": url, "models": models}
+    except Exception as e:  # noqa: BLE001
+        # 服务没起 / 地址不对：不算服务端错误，前端据此提示「服务未启动」
+        return {"reachable": False, "base_url": url, "models": [], "error": str(e)[:200]}
+
+
 @router.get("/current-provider")
 async def get_current_provider():
     """获取当前提供商信息"""
     check_desktop_mode()
     
     try:
-        config = get_desktop_config()
-        
-        # 根据当前配置返回提供商信息
+        # 以 LLM 管理器的实际状态为准（它读的就是设置页保存的 settings.json），
+        # 而不是固定返回 dashscope——那会让设置页每次打开都"跳回"通义千问。
+        from backend.core.llm_manager import get_llm_manager
+        info = get_llm_manager().get_current_provider_info()
+        display_name = info.get("display_name") or info.get("provider") or "阿里通义千问"
         provider_info = {
-            "provider": "dashscope",  # 默认提供商
-            "model": config.default_model or "qwen-plus",
-            "available": True,
-            "display_name": "通义千问",
-            "description": "阿里云通义千问服务"
+            "provider": info.get("provider") or "dashscope",
+            "model": info.get("model") or "qwen-plus",
+            "available": bool(info.get("available")),
+            "display_name": display_name,
+            "description": f"{display_name} 模型服务",
         }
+        if info.get("base_url"):
+            provider_info["base_url"] = info["base_url"]
         
         return provider_info
         
