@@ -39,6 +39,10 @@ const PROVIDERS: Record<ProviderKey, { name: string; short: string; hint: string
 }
 const isLocalProvider = (p: ProviderKey) => !!PROVIDERS[p]?.local
 
+// 通义千问国际站（alibabacloud.com 开通的 key 只能打这个域名，#45）；后端据 base_url 自动走兼容模式
+const DASHSCOPE_INTL_BASE_URL = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
+type DashscopeRegion = 'cn' | 'intl'
+
 const MODEL_GROUPS: Array<{ label: string; models: string[] }> = [
   { label: '通义千问', models: ['qwen-plus', 'qwen-turbo', 'qwen-max', 'qwen-long'] },
   { label: 'OpenAI', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini'] },
@@ -73,6 +77,7 @@ const SettingsPage: React.FC = () => {
   const [selectedProvider, setSelectedProvider] = useState<ProviderKey>('dashscope')
   // 本地预设的模型探测：{ reachable, models } —— 让用户从下拉里选，而不是手敲 qwen2.5:7b
   const [localModels, setLocalModels] = useState<{ loading: boolean; reachable: boolean | null; models: string[] }>({ loading: false, reachable: null, models: [] })
+  const [dashscopeRegion, setDashscopeRegion] = useState<DashscopeRegion>('cn')
   const [analyticsOn, setAnalyticsOn] = useState(isAnalyticsEnabled())
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const runtime = getRuntimeInfo()
@@ -80,46 +85,42 @@ const SettingsPage: React.FC = () => {
   useEffect(() => { loadData() }, [])
   useEffect(() => { setActive(initialSection) }, [initialSection])
 
+  // 桌面 / Docker / 本地脚本三种形态都走同一组 /settings 接口：settings.json 落在后端数据目录，
+  // API 进程与 worker 按 mtime 热重载。Docker 用户以前只能改 .env（#100）。
   const loadData = async () => {
     try {
-      const isDesktop = await isDesktopMode()
-      if (isDesktop) {
-        const [settings, provider] = await Promise.allSettled([
-          settingsApi.getSettings(),
-          settingsApi.getCurrentProvider()
-        ])
-        const settingsData = settings.status === 'fulfilled' ? settings.value : {}
-        const providerData = provider.status === 'fulfilled'
-          ? provider.value
-          : { available: false, provider: 'dashscope', display_name: '阿里通义千问', model: 'qwen-plus' }
-        // 以 settings.json 里保存的提供商为准；旧配置没有该字段时退回后端上报的当前提供商
-        const providerName = (settingsData.api?.api_provider || providerData.provider || 'dashscope') as ProviderKey
-        setCurrentProvider(providerData)
-        const savedBaseUrl = settingsData.api?.api_base_url || ''
-        const localPreset = PROVIDERS[providerName]?.local
-        form.setFieldsValue({
-          llm_provider: providerName,
-          dashscope_api_key: settingsData.api?.api_keys?.dashscope || '',
-          openai_api_key: settingsData.api?.api_keys?.openai || '',
-          openai_base_url: localPreset ? '' : savedBaseUrl,
-          // 本地预设只在改过默认地址时才把地址填进表单
-          local_base_url: localPreset && savedBaseUrl && savedBaseUrl !== localPreset.baseUrl ? savedBaseUrl : '',
-          gemini_api_key: settingsData.api?.api_keys?.gemini || '',
-          siliconflow_api_key: settingsData.api?.api_keys?.siliconflow || '',
-          jimeng_access_key: settingsData.api?.api_keys?.jimeng_access || '',
-          jimeng_secret_key: settingsData.api?.api_keys?.jimeng_secret || '',
-          model_name: settingsData.api?.api_model || 'qwen-plus',
-          chunk_size: settingsData.processing?.processing_chunk_size || 5000,
-          min_score_threshold: settingsData.processing?.processing_min_score || 0.7,
-          max_clips_per_collection: settingsData.processing?.processing_max_clips || 5
-        })
-        setSelectedProvider(PROVIDERS[providerName] ? providerName : 'dashscope')
-      } else {
-        // Web 模式：只展示默认值，不调用桌面 API
-        form.setFieldsValue({ llm_provider: 'dashscope', model_name: 'qwen-plus', chunk_size: 5000, min_score_threshold: 0.7, max_clips_per_collection: 5 })
-        setSelectedProvider('dashscope')
-        setCurrentProvider({ available: false, provider: 'dashscope', display_name: '阿里通义千问', model: 'qwen-plus' })
-      }
+      const [settings, provider] = await Promise.allSettled([
+        settingsApi.getSettings(),
+        settingsApi.getCurrentProvider()
+      ])
+      if (settings.status === 'rejected') console.warn('读取设置失败:', settings.reason)
+      const settingsData = settings.status === 'fulfilled' ? settings.value : {}
+      const providerData = provider.status === 'fulfilled'
+        ? provider.value
+        : { available: false, provider: 'dashscope', display_name: '阿里通义千问', model: 'qwen-plus' }
+      // 以 settings.json 里保存的提供商为准；旧配置没有该字段时退回后端上报的当前提供商
+      const providerName = (settingsData.api?.api_provider || providerData.provider || 'dashscope') as ProviderKey
+      setCurrentProvider(providerData)
+      const savedBaseUrl = settingsData.api?.api_base_url || ''
+      const localPreset = PROVIDERS[providerName]?.local
+      setDashscopeRegion(providerName === 'dashscope' && normalizeBaseUrl(savedBaseUrl) === DASHSCOPE_INTL_BASE_URL ? 'intl' : 'cn')
+      form.setFieldsValue({
+        llm_provider: providerName,
+        dashscope_api_key: settingsData.api?.api_keys?.dashscope || '',
+        openai_api_key: settingsData.api?.api_keys?.openai || '',
+        openai_base_url: localPreset || providerName === 'dashscope' ? '' : savedBaseUrl,
+        // 本地预设只在改过默认地址时才把地址填进表单
+        local_base_url: localPreset && savedBaseUrl && savedBaseUrl !== localPreset.baseUrl ? savedBaseUrl : '',
+        gemini_api_key: settingsData.api?.api_keys?.gemini || '',
+        siliconflow_api_key: settingsData.api?.api_keys?.siliconflow || '',
+        jimeng_access_key: settingsData.api?.api_keys?.jimeng_access || '',
+        jimeng_secret_key: settingsData.api?.api_keys?.jimeng_secret || '',
+        model_name: settingsData.api?.api_model || 'qwen-plus',
+        chunk_size: settingsData.processing?.processing_chunk_size || 5000,
+        min_score_threshold: settingsData.processing?.processing_min_score || 0.7,
+        max_clips_per_collection: settingsData.processing?.processing_max_clips || 5
+      })
+      setSelectedProvider(PROVIDERS[providerName] ? providerName : 'dashscope')
     } catch (err) {
       console.error('加载数据失败:', err)
     }
@@ -128,11 +129,6 @@ const SettingsPage: React.FC = () => {
   const handleSave = async (values: any) => {
     try {
       setLoading(true)
-      const isDesktop = await isDesktopMode()
-      if (!isDesktop) {
-        message.info('Web 模式下配置无法保存，请在桌面应用中使用')
-        return
-      }
       // 先读现有配置，避免清空其它 provider 已保存的 key
       let existing: any = null
       try { existing = await settingsApi.getSettings() } catch (err) { console.warn('获取现有配置失败:', err) }
@@ -154,7 +150,8 @@ const SettingsPage: React.FC = () => {
           api_provider: provider,
           api_base_url: provider === 'openai'
             ? normalizeBaseUrl(values.openai_base_url)
-            : isLocalProvider(provider) ? normalizeBaseUrl(values.local_base_url) : '',
+            : isLocalProvider(provider) ? normalizeBaseUrl(values.local_base_url)
+            : provider === 'dashscope' && dashscopeRegion === 'intl' ? DASHSCOPE_INTL_BASE_URL : '',
           api_model: normalizeModelName(values.model_name) || 'qwen-plus',
           api_max_tokens: 4096,
           api_timeout: 30
@@ -184,7 +181,8 @@ const SettingsPage: React.FC = () => {
     const apiKey: string = local ? '' : (form.getFieldValue(cfg.apiKeyField) || '')
     const baseUrl = selectedProvider === 'openai'
       ? normalizeBaseUrl(form.getFieldValue('openai_base_url'))
-      : local ? (normalizeBaseUrl(form.getFieldValue('local_base_url')) || cfg.local!.baseUrl) : ''
+      : local ? (normalizeBaseUrl(form.getFieldValue('local_base_url')) || cfg.local!.baseUrl)
+      : selectedProvider === 'dashscope' && dashscopeRegion === 'intl' ? DASHSCOPE_INTL_BASE_URL : ''
     const modelName = normalizeModelName(form.getFieldValue('model_name'))
     if (local && !modelName) {
       message.error('请先选择一个模型')
@@ -245,13 +243,15 @@ const SettingsPage: React.FC = () => {
   // 打开设置页时若已是本地预设，顺手探测一次
   useEffect(() => {
     if (isLocalProvider(selectedProvider)) void detectLocalModels(selectedProvider, form.getFieldValue('local_base_url'))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProvider])
 
   const openaiBaseUrl = Form.useWatch('openai_base_url', form)
   const usingCustomEndpoint = selectedProvider === 'openai' && !!normalizeBaseUrl(openaiBaseUrl)
   const cfg = PROVIDERS[selectedProvider]
   const localCfg = cfg.local
+  const keyUrl = selectedProvider === 'dashscope' && dashscopeRegion === 'intl'
+    ? 'https://bailian.console.alibabacloud.com/?tab=model#/api-key'
+    : cfg.keyUrl
 
   return (
     <div className="ac-page">
@@ -280,7 +280,7 @@ const SettingsPage: React.FC = () => {
         <div className="ac-settings-body">
           {/* ---------------- 模型 ---------------- */}
           {active === 'model' && (
-            <Section title="模型" description="切片分析用哪个大模型。密钥只保存在本机，不会上传。">
+            <Section title="模型" description="切片分析用哪个大模型。密钥只保存在运行 AutoClip 的这台机器上，不会上传。">
               <Form
                 form={form}
                 layout="vertical"
@@ -327,6 +327,23 @@ const SettingsPage: React.FC = () => {
                     </Row>
                   )}
 
+                  {selectedProvider === 'dashscope' && (
+                    <Row
+                      label="站点"
+                      hint={dashscopeRegion === 'intl'
+                        ? <>国际站（alibabacloud.com）的 Key，请求发往 <span className="ac-mono">dashscope-intl.aliyuncs.com</span>。</>
+                        : '在阿里云中国站（aliyun.com）开通的 Key 选这个；海外账号选国际站。'}
+                    >
+                      <Segmented
+                        size="sm"
+                        ariaLabel="通义千问站点"
+                        value={dashscopeRegion}
+                        onChange={setDashscopeRegion}
+                        options={[{ value: 'cn', label: '中国站' }, { value: 'intl', label: '国际站' }]}
+                      />
+                    </Row>
+                  )}
+
                   {selectedProvider === 'openai' && (
                     <Row
                       wide
@@ -354,7 +371,7 @@ const SettingsPage: React.FC = () => {
                     label="API Key"
                     hint={usingCustomEndpoint
                       ? '自建 / 本地兼容服务不校验密钥时可留空。'
-                      : <>在 <a href={cfg.keyUrl} onClick={(e) => { e.preventDefault(); openExternalLink(cfg.keyUrl) }} style={{ color: 'var(--ac-accent)' }}>{cfg.name} 控制台</a> 获取。</>}
+                      : <>在 <a href={keyUrl} onClick={(e) => { e.preventDefault(); openExternalLink(keyUrl) }} style={{ color: 'var(--ac-accent)' }}>{cfg.name}{selectedProvider === 'dashscope' && dashscopeRegion === 'intl' ? '国际站' : ''} 控制台</a> 获取。</>}
                   >
                     <Form.Item
                       name={cfg.apiKeyField}

@@ -251,8 +251,12 @@ def _set_project_status(project_id: str, status: str, error: Optional[str] = Non
             p.updated_at = datetime.utcnow()
             if status == "completed":
                 p.completed_at = datetime.utcnow()
-            if error is not None and hasattr(p, "error_message"):
-                p.error_message = error[:2000]
+            if error is not None:
+                # Project 表没有 error_message 列；CLI 路径也不建 Task 行，所以记到 metadata，
+                # ProjectService.latest_error_message 会回退读它，桌面首页 / 详情页照样能看到原因
+                meta = dict(p.project_metadata or {})
+                meta["last_error"] = error[:2000]
+                p.project_metadata = meta
             db.commit()
         finally:
             db.close()
@@ -307,10 +311,9 @@ def run_pipeline(req: RunRequest, video_in_raw: Path, on_progress: Optional[Prog
     from backend.services.simple_progress import add_progress_listener, remove_progress_listener
     from backend.services.simple_pipeline_adapter import SimplePipelineAdapter
 
-    if req.min_score is not None:
-        # step3 的阈值是模块常量（设置页的值目前也没接进去），CLI 这里直接覆盖
-        import backend.pipeline.step3_scoring as step3
-        step3.MIN_SCORE_THRESHOLD = float(req.min_score)
+    import backend.pipeline.step3_scoring as step3
+    # CLI 显式给的阈值优先于设置页；没给就让 step3 自己读设置页 / 默认值
+    step3.MIN_SCORE_OVERRIDE = float(req.min_score) if req.min_score is not None else None
 
     srt_in_raw = video_in_raw.parent / "input.srt"
     srt_arg = str(srt_in_raw) if srt_in_raw.exists() else ""
