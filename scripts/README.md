@@ -7,7 +7,9 @@
 
 | 脚本 | 用途 |
 |------|------|
-| `build_macos_arm.sh` | 桌面打包（macOS Apple Silicon）。端到端产出 `.app` + `.dmg`。 |
+| `build_macos_arm.sh` | 桌面打包（macOS Apple Silicon）。端到端产出 `.app` + `.dmg` + 更新用 `.app.tar.gz`。 |
+| `write_updater_manifest.py` | 从已签名产物写 Tauri updater 的 `latest.json`。CI release job 调用。 |
+| `lib/sign_updater.sh` | 用 `TAURI_SIGNING_PRIVATE_KEY` 给更新产物签名。密钥未设则跳过。 |
 | `build_windows_x64.sh` | 桌面打包（Windows x64）。在 Git Bash 里跑，产出 NSIS 安装包 `*-setup.exe`。 |
 | `lib/desktop_build_common.sh` | 上面两个脚本共用的平台无关步骤（便携 Python 下载、pip、后端拷贝、依赖检查、前端构建）。不直接执行。 |
 | `verify_desktop.sh` | 后端冒烟测试：`cargo check` + 起后端，校验 `/health` 与 `/api/v1/video-categories`。被 `nightly-desktop-smoke.yml` 调用。 |
@@ -25,7 +27,8 @@
 ```
 src-tauri/target/release/bundle/macos/
 ├── AutoClip Desktop.app
-└── AutoClip Desktop_<version>_aarch64.dmg
+├── AutoClip Desktop_<version>_aarch64.dmg
+└── AutoClip.Desktop_<version>_aarch64.app.tar.gz   # 应用内更新；有密钥时还有 .sig
 ```
 
 ### Windows x64
@@ -78,12 +81,18 @@ Tauri 合并，不影响 macOS。
 
 - `PIP_INDEX_URL`：pip 源，默认清华镜像；CI 里设为 `https://pypi.org/simple`
 - `PBS_VERSION` / `PBS_PYTHON_VERSION`：覆盖便携 Python 版本（默认见 `lib/desktop_build_common.sh`）
+- `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：updater 签名。不设则跳过 `.sig`
+- `VITE_PUBLIC_SENTRY_DSN` / `SENTRY_DSN`：崩溃上报。不设则 no-op。说明见 `docs/UPDATES_AND_SENTRY.md`
 
 ## CI
 
 `.github/workflows/desktop-build.yml`：
 - `workflow_dispatch`：可勾选只构建 macOS 或只构建 Windows
 - `v*` tag：两个平台并行构建，`release` job 汇总产物挂到 GitHub Release（任一平台失败不阻塞另一平台上传）
+
+## 社区看板
+
+`community_board.py`、`feature_signals.py`、`setup_community_board.py` 服务于公开路线图，不参与打包。`ingest_app_feedback.py` 把应用内反馈写进 Issue 和 Discussions。用法见 `docs/COMMUNITY_BOARD.md`。
 
 ## 开发模式（不打包）
 

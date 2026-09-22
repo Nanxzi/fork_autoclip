@@ -3,9 +3,14 @@ import { Routes, Route, useLocation } from 'react-router-dom'
 import { Layout } from 'antd'
 import HomePage from './pages/HomePage'
 import ProjectDetailPage from './pages/ProjectDetailPage'
+import PublishClipPage from './pages/PublishClipPage'
+import PublishListPage from './pages/PublishListPage'
+import PublishWeekPage from './pages/PublishWeekPage'
 import SettingsPage from './pages/SettingsPage'
 import Header from './components/Header'
+import { UpdateProvider } from './desktop/UpdatePrompt'
 import { trackPageview } from './analytics/posthog'
+import { startWorkflowObserver } from './analytics/observer'
 
 const { Content } = Layout
 
@@ -20,18 +25,24 @@ function usePageviewTracking() {
 function App() {
   console.log('🎬 App组件已加载');
   usePageviewTracking()
+  useEffect(() => startWorkflowObserver(), [])
 
   return (
-    <Layout>
-      <Header />
-      <Content>
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/project/:id" element={<ProjectDetailPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
-      </Content>
-    </Layout>
+    <UpdateProvider>
+      <Layout>
+        <Header />
+        <Content>
+          <Routes>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/project/:id/publish/week" element={<PublishWeekPage />} />
+            <Route path="/project/:id/publish/:clipId" element={<PublishClipPage />} />
+            <Route path="/project/:id/publish" element={<PublishListPage />} />
+            <Route path="/project/:id" element={<ProjectDetailPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+          </Routes>
+        </Content>
+      </Layout>
+    </UpdateProvider>
   )
 }
 

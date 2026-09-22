@@ -14,12 +14,12 @@
 ### 1. Fork并克隆项目
 
 ```bash
-# Fork项目到您的GitHub账户，然后克隆
+# Fork 项目到您的 GitHub 账户，再将下面的 your-username 替换为您的用户名
 git clone https://github.com/your-username/autoclip.git
 cd autoclip
 
 # 添加上游仓库
-git remote add upstream https://github.com/original-username/autoclip.git
+git remote add upstream https://github.com/zhouxiaoka/autoclip.git
 ```
 
 ### 2. 设置开发环境
@@ -273,6 +273,12 @@ git push origin feature/your-feature-name
 - 保持内容更新
 - 使用清晰的标题层级
 
+## 想法放哪里
+
+希望 AutoClip 支持什么、你的用法、想要哪个模型，发到 [GitHub Discussions](https://github.com/zhouxiaoka/autoclip/discussions)。
+能复现的故障用 Issue 里的 bug 模板。已经决定要做的需求才会出现在公开路线图上。
+分类、六列和 Agent 的操作见 [社区看板](docs/COMMUNITY_BOARD.md)。
+
 ## 社区行为准则
 
 ### 我们的承诺
@@ -294,9 +300,9 @@ git push origin feature/your-feature-name
 
 ## 联系方式
 
-- **GitHub Issues**: [项目Issues](https://github.com/your-username/autoclip/issues)
-- **GitHub Discussions**: [项目讨论](https://github.com/your-username/autoclip/discussions)
-- **邮箱**: support@autoclip.com
+个人业余维护，回复时间不固定。请先查看 [常见问题](docs/FAQ.md)。
+
+邮箱：[christine_zhouye@163.com](mailto:christine_zhouye@163.com)
 
 ## 致谢
 
