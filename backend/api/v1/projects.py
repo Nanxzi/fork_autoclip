@@ -764,7 +764,11 @@ async def get_processing_status(
         status = processing_service.get_processing_status(project_id, str(latest_task.id))
         
         return status
-    except Exception as e:
+    except HTTPException:
+        # 404 等预期响应原样返回。记成 exception 会被 Sentry 当成故障，
+        # 外层再包一层 500 会让处理页把「项目不存在」当成服务器错误一直重试。
+        raise
+    except Exception:
         logger.exception("获取处理状态失败: %s", project_id)
         raise HTTPException(status_code=500, detail="获取处理状态失败，请稍后重试")
 
@@ -986,12 +990,17 @@ async def get_project_clip(
         if not video_file.exists():
             raise HTTPException(status_code=404, detail="Clip video file not found")
         
-        # 返回文件流
+        # 内联播放。默认 attachment 时，macOS WKWebView 的 <video> 不会播放。
         from fastapi.responses import FileResponse
         return FileResponse(
             path=str(video_file),
             media_type="video/mp4",
-            filename=video_file.name
+            filename=video_file.name,
+            content_disposition_type="inline",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-cache",
+            },
         )
     except HTTPException:
         raise

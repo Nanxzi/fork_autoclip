@@ -6,11 +6,13 @@
 
 ### AutoClip 收费吗？必须有 API Key 吗？
 
-AutoClip 本身免费、开源（MIT）。云端模型调用由你选择的服务商计费，价格、额度和可用模型以服务商为准。Ollama / LM Studio 本地预设无需云端 API Key，但需要下载模型并具备相应硬件；本地 Whisper 也需要单独安装组件和语音模型。
+AutoClip 本身仍然免费、开源（MIT）。云端模型调用由你选择的服务商计费，价格、额度和可用模型以服务商为准。Ollama / LM Studio 本地预设无需云端 API Key，但需要下载模型并具备相应硬件；本地 Whisper 也需要单独安装组件和语音模型。
+
+自 **v1.3.2** 起，海外发布需要你自己的 [Upload-Post](https://www.upload-post.com) 账号。免费档、付费档，以及 TikTok、YouTube、Instagram 等平台的每日额度，以 Upload-Post 自己的页面为准，不是 AutoClip 的承诺。
 
 ### 视频会上传吗？可以离线使用吗？
 
-本地剪辑流程在你的设备上处理和保存视频。选择云端语言模型时，字幕文本会发送到该服务商；你主动使用发布上传功能时，视频会发送到所选平台。匿名使用统计和错误报告取决于版本、构建配置和设置，详见 [隐私说明](PRIVACY.md)。
+剪辑留在你的设备上，视频也保存在本机。选择云端语言模型时，字幕文本会发送到该服务商。成片只有在你点「发布」之后才会离开这台机器，发到你已经连接的平台。也可以只下载、不发布。匿名使用统计和错误报告取决于版本、构建配置和设置，详见 [隐私说明](PRIVACY.md)。发布页自 **v1.3.2** 起可用。
 
 准备好本地视频、语言模型及语音模型后，核心本地处理无需云端模型服务。视频下载、组件安装、模型下载和更新仍需要网络。不要把“本地处理”理解为所有功能都不联网。
 
@@ -57,6 +59,10 @@ Docker 中的 `localhost` 是容器自己。宿主机模型服务的访问方式
 
 首页的本地上传入口支持可选 `.srt`。没有可用字幕时需要本地语音转写；先在设置中安装 Whisper 组件与模型。CLI 环境可安装 `faster-whisper`。其他字幕格式建议先转换为带正确时间轴的 SRT，不假设上传入口支持所有格式。
 
+### 在 Windows 上安装 Whisper 仍提示 mlx-whisper 仅支持 Apple Silicon？
+
+「设置 → 转写」里安装 Whisper 时，若 Windows 或其他非 Mac 仍出现红色错误「mlx-whisper 仅支持 Apple Silicon (macOS)」，请更新到 **v1.3.3** 或更新（含 [#145](https://github.com/zhouxiaoka/autoclip/pull/145)）。桌面版用「设置 → 应用 → 检查更新」，或到 [Releases](https://github.com/zhouxiaoka/autoclip/releases) 下载。旧版会误报并拦住安装；更新后点原来的「安装」即可。见 [#141](https://github.com/zhouxiaoka/autoclip/issues/141)。
+
 ### 为什么没有生成片段？
 
 先看项目错误提示，再按失败阶段排查：
@@ -95,11 +101,45 @@ autoclip export PROJECT_ID --preset shorts
 
 `PROJECT_ID` 替换为真实项目 ID。其他预设包括 `douyin`、`xiaohongshu`、`bilibili` 和 `original`，详见 [CLI / MCP 指南](CLI_AND_MCP.md)。
 
+### v1.3.2 的发布页怎么用？
+
+自 **v1.3.2** 起可用。
+
+切片就绪后，在切片上打开发布。海外和 B 站在同一页：
+
+- 海外平台走你自己的 Upload-Post 账号，以及你在那里连接的平台。范围是 TikTok、Instagram、YouTube、Facebook、LinkedIn、X、Threads、Pinterest、Bluesky、Discord、Telegram、Google Business，以该账号实际连接的为准。
+- B 站在设置里粘贴一次 Cookie。Cookie 须包含 `SESSDATA`、`bili_jct`、`DedeUserID`。一个 B 站账号。
+
+可以现在发，也可以定时。B 站的定时须晚于现在两小时。标题和描述可以不填，默认用切片标题。字幕烧录默认打开。片头约 4 秒的标题卡默认打开。可见范围在平台支持时默认「仅自己」。AutoClip 对外只对 TikTok、YouTube、B 站承诺仅自己 / private。也可以只下载成片、不发布。
+
+项目页可以查看发布记录和月历，并取消尚未发出的排期。「排这一周」只排海外平台，把还没发的切片填进周一、周三、周五的 09:00，不包含 B 站。
+
+画幅跟着要发的账号：有竖屏账号时渲成 9:16，不按 60 秒截断。只发 B 站时用横屏。只有 LinkedIn、X 这类横屏账号时用原画。竖屏和 B 站放在同一次时，各自单独渲染。
+
+发布时可自动生成封面，避免 B 站空封面被拒。默认封面和标题卡的细节随本版安装包说明。自 **v1.3.2** 起可用。
+
 ## 更新、备份与反馈
 
 ### 数据存在哪里？如何备份？
 
 桌面默认目录见 [安装指南](USER_INSTALLATION_GUIDE.md)。Docker 使用仓库下的 `data/`、`logs/`、`uploads/` 绑定目录。退出应用或停止服务后，备份数据库、项目文件与配置，避免运行中只复制 SQLite 主文件。不要依赖未经确认的自动备份，也不要为了排错删除原始数据。
+
+### 升级后项目列表打不开
+
+桌面端和 Docker 的项目状态、类型存在 SQLite 的文本列里。服务按枚举**名字**读取（`PENDING`、`KNOWLEDGE`）。库里若还有当前版本对不上的值，整页列表会加载失败。已知的一类旧值是已经从代码移除的 `cancelled` / `CANCELLED`；写成小写 value（`pending`）时也会对不上。
+
+自 **v1.3.3** 起，服务启动时自动改写这两个字段。项目记录保留：
+
+- 能对上的 value 改成枚举名，例如 `pending` → `PENDING`
+- 无法识别的状态（含 `cancelled`）改为 `FAILED`
+- 无法识别的项目类型改为 `DEFAULT`
+
+升级后重新打开应用，项目列表应能打开。被改写的项目会显示为失败或默认类型。升级前若要自己看一眼：
+
+```sql
+SELECT status, COUNT(*) FROM projects GROUP BY status;
+SELECT project_type, COUNT(*) FROM projects GROUP BY project_type;
+```
 
 ### 哪里看已知问题？怎样联系？
 

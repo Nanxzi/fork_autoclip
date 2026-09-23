@@ -6,11 +6,13 @@
 
 ### Is AutoClip free? Do I need an API key?
 
-AutoClip is free and open source under MIT. Cloud model providers bill their own usage; consult your provider for pricing, quotas, and model availability. Ollama / LM Studio presets need no cloud API key, but require downloaded models and suitable hardware. Local Whisper needs separate speech components and model files.
+AutoClip itself stays free and open source under MIT. Cloud model providers bill their own usage; consult your provider for pricing, quotas, and model availability. Ollama / LM Studio presets need no cloud API key, but require downloaded models and suitable hardware. Local Whisper needs separate speech components and model files.
+
+As of **v1.3.2**, overseas publishing needs your own [Upload-Post](https://www.upload-post.com) account. Free and paid tiers, and daily caps for TikTok, YouTube, Instagram, and other platforms, follow Upload-Post’s own pages. They are not AutoClip promises.
 
 ### Are videos uploaded? Can I work offline?
 
-The local editing pipeline processes and stores videos on your device. Cloud language models receive transcript text. If you explicitly use a publishing/upload feature, the video is sent to the selected platform. Usage analytics and error reporting depend on the version, build configuration, and settings; see the [privacy notes](PRIVACY.en.md).
+Editing stays on your device, and the video stays there too. Cloud language models receive transcript text. The finished clip leaves the machine only after you click Publish, and only to the platforms you connected. You can also download it without publishing. Usage analytics and error reporting depend on the version, build configuration, and settings; see the [privacy notes](PRIVACY.en.md). The Publish page is available in **v1.3.2**.
 
 Once you have local footage, a local language model, and any required speech model, core local processing does not need a cloud model service. Video downloads, component installation, model downloads, and updates still need internet access. Local processing does not mean that every feature is offline.
 
@@ -57,6 +59,10 @@ Inside Docker, `localhost` refers to the container. See the [Docker guide](DOCKE
 
 Local file import accepts an optional `.srt`. Without usable subtitles, you need speech transcription: install the Whisper components and model in Settings first. CLI users can install `faster-whisper`. Convert other subtitle formats to accurately timed SRT rather than assuming every format is accepted.
 
+### What if installing Whisper on Windows still says mlx-whisper only supports Apple Silicon?
+
+If Settings → Transcription → Install still shows the red error 「mlx-whisper 仅支持 Apple Silicon (macOS)」 on Windows or any other non-Mac system, update to **v1.3.3** or later (includes [#145](https://github.com/zhouxiaoka/autoclip/pull/145)). On desktop, use Settings → Application → Check for updates, or download it from [Releases](https://github.com/zhouxiaoka/autoclip/releases). Older builds showed that message and blocked the install by mistake. After you update, use the same Install button. See [#141](https://github.com/zhouxiaoka/autoclip/issues/141).
+
 ### Why were no clips generated?
 
 Read the project error first, then check the failed stage:
@@ -95,11 +101,45 @@ autoclip export PROJECT_ID --preset shorts
 
 Replace `PROJECT_ID` with the actual project ID. Other presets include `douyin`, `xiaohongshu`, `bilibili`, and `original`; see the [CLI / MCP reference](CLI_AND_MCP.md) (Chinese).
 
+### How does the v1.3.2 Publish page work?
+
+Available in **v1.3.2**.
+
+After clips are ready, open Publish on a clip. Overseas platforms and Bilibili share that page:
+
+- Overseas platforms use your own Upload-Post account and the platforms you connected there: TikTok, Instagram, YouTube, Facebook, LinkedIn, X, Threads, Pinterest, Bluesky, Discord, Telegram, and Google Business, as available on that account.
+- Bilibili is one account. Paste a Cookie once in Settings. It must include `SESSDATA`, `bili_jct`, and `DedeUserID`.
+
+Publish now or on a schedule. A Bilibili schedule must be more than two hours ahead. Title and description are optional and default to the clip title. Burned-in captions default on. The title card, about four seconds at the start, defaults on. Visibility defaults to private / self where the platform supports it. AutoClip promises that only for TikTok, YouTube, and Bilibili. You can download the file without publishing.
+
+The project page shows publish history and a calendar, and can cancel a schedule that has not gone out. “Plan this week” is overseas only: it fills unpublished clips into Monday, Wednesday, and Friday at 09:00. It does not include Bilibili.
+
+Aspect follows the accounts you send to. Vertical accounts render 9:16 without a 60-second cut. Bilibili alone renders landscape. LinkedIn or X alone keeps the original frame. Vertical and Bilibili in the same batch are rendered separately.
+
+When you publish, a cover can be generated automatically so Bilibili does not reject an empty cover. Default cover and title-card details follow that release’s installer notes. Available in **v1.3.2**.
+
 ## Updates, backups, and support
 
 ### Where is my data? How do I back it up?
 
 See the [installation guide](USER_INSTALLATION_GUIDE.en.md) for desktop defaults. Docker uses the repository’s `data/`, `logs/`, and `uploads/` bind mounts. Exit the app or stop services before backing up the database, project files, and settings; do not copy only the main SQLite file while jobs are running. Do not assume automatic backups exist, or delete source data to troubleshoot.
+
+### Project list fails after an upgrade
+
+Desktop and Docker store project status and type in SQLite text columns. The service reads enum **names** (`PENDING`, `KNOWLEDGE`). A value the current version does not know fails the entire list. One known leftover is `cancelled` / `CANCELLED`, removed from the code earlier. Lowercase values such as `pending` also fail that lookup.
+
+Starting with **v1.3.3**, startup rewrites those two columns. Project rows stay in place:
+
+- A matching value becomes the enum name, for example `pending` → `PENDING`
+- An unrecognized status, including `cancelled`, becomes `FAILED`
+- An unrecognized project type becomes `DEFAULT`
+
+Reopen the app after upgrading and the project list should load. Rewritten projects show as failed or as the default type. To inspect before upgrading:
+
+```sql
+SELECT status, COUNT(*) FROM projects GROUP BY status;
+SELECT project_type, COUNT(*) FROM projects GROUP BY project_type;
+```
 
 ### Where are known issues? How can I get help?
 
