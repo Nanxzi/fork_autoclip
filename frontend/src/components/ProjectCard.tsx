@@ -10,6 +10,9 @@ import { UnifiedStatusBar } from './UnifiedStatusBar'
 import FeedbackDialog from './FeedbackDialog'
 import { useSimpleProgressStore } from '../stores/useSimpleProgressStore'
 import { Btn } from '../ui'
+import { classifyLlmKeyFailure } from '../utils/llmFailure'
+import { classifySubtitleFailure } from '../utils/subtitleFailure'
+import { isSourceDownloading, readDownloadProgress } from '../utils/downloadProgress'
 // import { 
 //   getProjectStatusConfig, 
 //   calculateProjectProgress, 
@@ -230,9 +233,10 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onDelete, onRetry, o
     generateThumbnail()
   }, [project.id, project.video_path, thumbnailCacheKey])
 
-  // 检查是否是下载状态 - 根据下载进度判断
-  const downloadProgress = project.processing_config?.download_progress || 0
-  const isDownloading = project.status === 'pending' && downloadProgress > 0 && downloadProgress < 100
+  // 片源进度在接口的 settings 上（后端字段名 processing_config）。
+  // 读错字段时进度恒为 0，下面会把所有 pending 画成 5%。
+  const downloadProgress = readDownloadProgress(project)
+  const isDownloading = isSourceDownloading(project)
   const isImporting = project.status === 'pending' && !isDownloading
   
   // 状态标准化处理
@@ -290,6 +294,14 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onDelete, onRetry, o
     stage: failedProgress?.stage,
     error_message: project.error_message || failedProgress?.message || undefined,
   }
+  const llmKeyFailure = classifyLlmKeyFailure(
+    project.error_message || failedProgress?.message,
+    project.error_code,
+  )
+  const subtitleFailure = classifySubtitleFailure(
+    project.error_message || failedProgress?.message,
+    project.error_code,
+  )
 
   const handleRetry = async (opts?: { silent?: boolean }) => {
     if (isRetrying) return
@@ -619,7 +631,7 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onDelete, onRetry, o
           {/* 状态和统计信息 — Calm Premium，见 DESIGN.md */}
           {(normalizedStatus === 'importing' || normalizedStatus === 'downloading' || normalizedStatus === 'processing' || normalizedStatus === 'failed') ? (
             // 进行中 / 失败：细进度线或终态点，占满宽度
-            <div style={{ marginBottom: '2px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <div style={{ marginBottom: '2px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
               <UnifiedStatusBar
                 projectId={project.id}
                 status={normalizedStatus}
@@ -633,7 +645,13 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, onDelete, onRetry, o
               />
               {normalizedStatus === 'failed' && (
                 // 失败态：重试 + 反馈（反馈自动带上阶段 / 错误 / 版本 / 模型上下文）
-                <div style={{ display: 'flex', gap: 2, flex: '0 0 auto' }} onClick={(e) => e.stopPropagation()}>
+                <div style={{ display: 'flex', gap: 2, flex: '0 0 auto', marginLeft: 'auto' }} onClick={(e) => e.stopPropagation()}>
+                  {subtitleFailure && (
+                    <Btn variant="text" size="sm" style={{ height: 26, padding: '0 8px', fontSize: 12.5 }} onClick={() => navigate('/settings?section=speech')}>{t("转写设置")}</Btn>
+                  )}
+                  {llmKeyFailure && (
+                    <Btn variant="text" size="sm" style={{ height: 26, padding: '0 8px', fontSize: 12.5 }} onClick={() => navigate('/settings?section=model')}>{t("模型设置")}</Btn>
+                  )}
                   <Btn variant="text" size="sm" style={{ height: 26, padding: '0 8px', fontSize: 12.5 }} loading={isRetrying} onClick={() => handleRetry()}>{t("重试")}</Btn>
                   <Btn variant="text" size="sm" style={{ height: 26, padding: '0 8px', fontSize: 12.5 }} onClick={() => setFeedbackOpen(true)}>{t("反馈")}</Btn>
                 </div>
