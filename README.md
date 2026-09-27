@@ -14,6 +14,14 @@
 [![GitHub issues](https://img.shields.io/github/issues/zhouxiaoka/autoclip?style=flat-square)](https://github.com/zhouxiaoka/autoclip/issues)
 [![License: MIT](https://img.shields.io/github/license/zhouxiaoka/autoclip?style=flat-square)](LICENSE)
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/repositories/25801" alt="AutoClip — GitHub Trending (Trendshift)" width="250" height="55"></a>
+</p>
+
+本地剪辑 · 自备模型 Key
+
+曾上 GitHub Trending，非实时排名。GitHub Trending 与 Trendshift 是不同榜单。
+
 [项目网站](https://zhouxiaoka.github.io/autoclip_intro/) · [讨论](https://github.com/zhouxiaoka/autoclip/discussions) · [反馈问题](https://github.com/zhouxiaoka/autoclip/issues)
 
 **桌面安装包: [macOS · Apple Silicon](https://github.com/zhouxiaoka/autoclip/releases/latest) · [Windows · x64](https://github.com/zhouxiaoka/autoclip/releases/latest)**
@@ -24,7 +32,7 @@
 
 自 v1.3.1 起，产品界面、官网和 README 均支持中、英、日、韩、西、葡、俄、法。顶栏可切换界面语言或跟随系统；用户素材和生成内容保留原文。
 
-AutoClip 用 AI 分析视频字幕、定位高光、生成标题，并自动剪出片段与合集。适合访谈、播客、课程和直播回放，提供桌面应用、Docker Web 界面和 CLI / MCP 三种使用方式。
+AutoClip 用 AI 定位高光、生成标题，并剪出片段与合集。默认走字幕分析，适合访谈、播客、课程和直播回放。自 **v1.4.0** 起，可另行启用游戏视觉分析（多模态）：需自行配置多模态模型，并显式打开付费视觉初筛。导入后先确认，确认后才正式理解和剪辑，再在共用编辑器里修改。提供桌面应用、Docker Web 界面和 CLI / MCP 三种使用方式。
 
 ## 界面预览
 
@@ -32,30 +40,22 @@ AutoClip 用 AI 分析视频字幕、定位高光、生成标题，并自动剪�
 
 v1.3.0 真实 Web 界面：在文件导入区添加本地视频，可同时提供 SRT 字幕。
 
-## 社区成就
-
-<p align="center">
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/repositories/25801" alt="AutoClip — GitHub Trending" width="250" height="55"></a>
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/trendshift/repositories/25801/daily?language=Python" alt="AutoClip — Trendshift Python daily ranking" width="250" height="55"></a>
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/trendshift/repositories/25801/daily" alt="AutoClip — Trendshift daily ranking, all languages" width="250" height="55"></a>
-</p>
-
-以下徽章由 Trendshift 提供，点击可查看 AutoClip 的上榜记录。GitHub Trending 与 Trendshift 是不同榜单；徽章展示平台记录的成就，不代表当前实时排名。
-
 ## 你可以做什么
 
 | 能力 | 说明 |
 | --- | --- |
 | 导入素材 | 支持本地视频、YouTube 与 B 站链接，可附带 SRT 字幕。 |
-| 发现高光 | 从字幕提取大纲、话题时间线、精彩度评分和片段标题。 |
+| 发现高光 | 默认从字幕提取大纲、话题时间线、精彩度评分和片段标题。 |
+| 游戏视觉分析（v1.4.0，可选） | 自行配置多模态模型，并显式启用付费视觉初筛。确认后识别录屏中的独立事件，生成可编辑高光与推广草稿。字幕分析仍是默认。单一样本不代表所有游戏；输出仍需人工检查边界、裁切和文案，不承诺广告投放效果。v1.4.0 不含 CTA 动效、生成式品牌尾卡、卡拉 OK / 逐词字幕。 |
+| 确认后再剪 | 导入后先确认制作类型，也可手动校正。未确认的导入可恢复；确认后才正式理解和剪辑，再在共用编辑器里修改。 |
 | 剪辑与合集 | 自动生成视频切片，组合推荐合集，也可手动调整顺序。 |
-| 发布（v1.3.2） | 切片就绪后，在同一页打开发布。自 **v1.3.2** 起可用。海外走你自己的 Upload-Post 账号里已连接的平台：TikTok、Instagram、YouTube、Facebook、LinkedIn、X、Threads、Pinterest、Bluesky、Discord、Telegram、Google Business，以该账号实际连接的为准。B 站在设置里粘贴一次 Cookie（须含 SESSDATA、bili_jct、DedeUserID），一个账号。可现在发或定时；标题和描述可不填，默认用切片标题；字幕烧录默认打开，片头约 4 秒标题卡默认打开。可见范围在平台支持时默认「仅自己」，对外只对 TikTok、YouTube、B 站承诺仅自己 / private。也可以只下载、不发布。项目页有发布记录和月历，可取消尚未发出的排期。「排这一周」只排海外，填周一、周三、周五 09:00，不含 B 站。竖屏账号渲成 9:16，不按 60 秒截断；只发 B 站用横屏；只有 LinkedIn、X 这类横屏账号时用原画；竖屏和 B 站同一次各渲各的。 |
-| 自动封面（v1.3.2） | 发布时可自动生成封面，避免 B 站空封面被拒。默认封面和标题卡的细节随本版安装包说明。自 **v1.3.2** 起可用。 |
+| 发布（v1.3.2） | 自 **v1.3.2** 起，切片做好后可在本页发布或预约。海外平台用 Upload-Post；B 站在设置里粘贴一次登录 Cookie。默认尽量私密；也可以只导出、不发布。细则见 [发布说明](docs/PUBLISH_UPLOAD_POST.md)。 |
+| 自动封面（v1.3.2） | 发布时可自动生成封面，避免 B 站因空封面拒稿；默认细节见安装说明。自 **v1.3.2** 起可用。 |
 | 发布导出 | 提供抖音、小红书、YouTube Shorts 和 B 站导出预设，支持烧录字幕与标题卡。 |
-| 自由选择模型 | 支持通义千问、OpenAI 兼容接口、Gemini、硅基流动，以及 Ollama / LM Studio 本地模型。 |
+| 自由选择模型 | 支持 Qwen、OpenAI、Gemini、DeepSeek、Doubao Seed、Kimi、GLM、Grok，以及 Ollama / LM Studio 本地模型（自备 API Key）。 |
 | 接入自动化 | 通过 CLI 批量编排，或让支持 MCP 的客户端调用同一条处理流水线。 |
 
-> 导入视频 → 准备字幕 / 语音转写 → AI 分析与评分 → 生成切片与合集 → 导出成片
+> 导入 → 确认 → 默认字幕分析，或显式启用的游戏视觉分析 → 在共用编辑器中修改 → 导出成片
 
 ## 快速开始
 
@@ -69,7 +69,7 @@ v1.3.0 真实 Web 界面：在文件导入区添加本地视频，可同时提�
 | Windows 10 / 11 · x64 | `-setup.exe` |
 | Intel Mac / Linux | 使用下方 Docker 或 CLI |
 
-桌面安装包内置 Python 和 FFmpeg。实际支持的平台与首次启动说明以对应 Release 为准。安装后先在设置中选择模型提供商、测试连接并保存，再导入视频。
+桌面安装包内置 Python 和 FFmpeg。实际支持的平台与首次启动说明以对应 Release 为准。Windows 提供安装包；实际安装、导入与保存尚待实机验收。安装后先在设置中选择模型提供商、测试连接并保存，再导入视频。
 
 ### 2. Docker / Web
 
@@ -135,11 +135,11 @@ autoclip mcp
 
 | 方式 | 配置 |
 | --- | --- |
-| 云端模型 | 在设置中选择通义千问、OpenAI 兼容接口、Gemini 或硅基流动，填写 API Key；兼容接口可配置 Base URL。 |
+| 云端模型 | 在设置中选择 Qwen、OpenAI、Gemini、DeepSeek、Doubao Seed、Kimi、GLM 或 Grok，填写 API Key；兼容接口可配置 Base URL。 |
 | Ollama | 服务地址默认为 `http://localhost:11434/v1`，默认模型 `qwen2.5:7b`，无需 API Key。 |
 | LM Studio | 加载模型并启动 Local Server，默认地址 `http://localhost:1234/v1`，选择服务实际提供的模型。 |
 
-Docker 访问宿主机模型服务时，`localhost` 指向容器自身；需配置容器能访问的宿主机地址。详见 CLI / MCP 指南。视频剪辑在本地进行，云端模型分析会向所选服务发送字幕文本；下载视频与模型仍需要网络。
+Docker 访问宿主机模型服务时，`localhost` 指向容器自身；需配置容器能访问的宿主机地址。详见 CLI / MCP 指南。剪辑与渲染在本机完成。字幕路线向所选云端服务发送相关字幕或文案；启用云端视觉模型时，会发送抽样画面及必要文字。费用取决于所选服务商。下载视频与模型仍需要网络。
 
 ## 常见问题
 
@@ -153,7 +153,7 @@ AutoClip 本身仍然免费、开源（MIT）。云端模型由所选服务商�
 <details>
 <summary>我的视频会上传吗？</summary>
 
-剪辑留在你的设备上。使用云端模型时，字幕文本会发送给该服务商。成片只有在你点「发布」之后才会离开这台机器，发到你已连接的平台；也可以只下载、不发布。这一发布页自 **v1.3.2** 起可用。统计与错误报告取决于版本和设置，详见隐私说明。
+剪辑与渲染留在你的设备上。字幕路线会把相关字幕或文案发给所选服务商；启用云端视觉模型时，会发送抽样画面及必要文字。费用取决于所选服务商。成片只有在你点「发布」之后才会离开这台机器，发到你已连接的平台；也可以只下载、不发布。这一发布页自 **v1.3.2** 起可用。统计与错误报告取决于版本和设置，详见隐私说明。
 
 </details>
 
@@ -174,7 +174,7 @@ AutoClip 本身仍然免费、开源（MIT）。云端模型由所选服务商�
 <details>
 <summary>什么视频更适合？处理要多久？</summary>
 
-当前分析主要基于字幕，适合访谈、播客、课程和口播。纯视觉动作或音乐类视频效果可能有限。耗时取决于时长、硬件、模型与导出设置，建议先用自备的 3–5 分钟短样片验证。
+默认分析基于字幕，适合访谈、播客、课程和口播。自 **v1.4.0** 起，游戏录屏可另行启用视觉分析；单一样本不代表所有游戏，输出仍需人工检查边界、裁切和文案，不承诺广告投放效果。v1.4.0 不含 CTA 动效、生成式品牌尾卡、卡拉 OK / 逐词字幕。耗时取决于时长、硬件、模型与导出设置，建议先用自备的 3–5 分钟短样片验证。
 
 第一次出片先试这条：[Jackie Dowling | Stanford Energy Fellow](https://www.youtube.com/watch?v=dtmjLzOtx8I)（Stanford ENERGY）。示例·非托管·自担使用权。
 

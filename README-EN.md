@@ -14,6 +14,14 @@
 [![GitHub issues](https://img.shields.io/github/issues/zhouxiaoka/autoclip?style=flat-square)](https://github.com/zhouxiaoka/autoclip/issues)
 [![License: MIT](https://img.shields.io/github/license/zhouxiaoka/autoclip?style=flat-square)](LICENSE)
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/repositories/25801" alt="AutoClip — GitHub Trending (Trendshift)" width="250" height="55"></a>
+</p>
+
+Local editing · bring your own model key
+
+Previously listed on GitHub Trending; not a live ranking. GitHub Trending and Trendshift are separate.
+
 [Website](https://zhouxiaoka.github.io/autoclip_intro/) · [Discussions](https://github.com/zhouxiaoka/autoclip/discussions) · [Report an issue](https://github.com/zhouxiaoka/autoclip/issues)
 
 **Desktop installers: [macOS · Apple Silicon](https://github.com/zhouxiaoka/autoclip/releases/latest) · [Windows · x64](https://github.com/zhouxiaoka/autoclip/releases/latest)**
@@ -24,7 +32,7 @@
 
 Since v1.3.1, the app, website and README support Chinese, English, Japanese, Korean, Spanish, Portuguese, Russian and French. Choose a language in the header or follow your system. Your media and generated content keep their original language.
 
-AutoClip uses AI to analyze video transcripts, find highlights, write titles, and create clips and collections. Built for interviews, podcasts, courses, and livestream recordings, it offers a desktop app, a Docker web interface, and CLI / MCP access.
+AutoClip uses AI to find highlights, write titles, and create clips and collections. Subtitle analysis is the default and suits interviews, podcasts, courses, and livestream recordings. As of **v1.4.0**, you can separately enable optional game visual analysis (multimodal): configure your own multimodal model and explicitly turn on paid visual screening. Import, then confirm. Understanding and cutting start only after confirmation, and you edit the result in the shared editor. It offers a desktop app, a Docker web interface, and CLI / MCP access.
 
 ## See the interface
 
@@ -32,30 +40,22 @@ AutoClip uses AI to analyze video transcripts, find highlights, write titles, an
 
 Real v1.3.0 web interface: add a local video in the file import area, with optional SRT subtitles.
 
-## Community recognition
-
-<p align="center">
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/repositories/25801" alt="AutoClip — GitHub Trending" width="250" height="55"></a>
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/trendshift/repositories/25801/daily?language=Python" alt="AutoClip — Trendshift Python daily ranking" width="250" height="55"></a>
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/trendshift/repositories/25801/daily" alt="AutoClip — Trendshift daily ranking, all languages" width="250" height="55"></a>
-</p>
-
-These badges are provided by Trendshift. Click to view AutoClip’s recorded achievements. GitHub Trending and Trendshift are separate rankings; badges show recorded achievements, not a live position.
-
 ## What you can do
 
 | Capability | Details |
 | --- | --- |
 | Import footage | Use local videos, YouTube or Bilibili links, with optional SRT subtitles. |
-| Find highlights | Extract outlines, topic timelines, highlight scores, and clip titles from transcripts. |
+| Find highlights | By default, extract outlines, topic timelines, highlight scores, and clip titles from subtitles. |
+| Game visual analysis (v1.4.0, optional) | Configure your own multimodal model and explicitly enable paid visual screening. After you confirm, it finds separate events in a gameplay recording and produces editable highlights and promo drafts. Subtitle analysis stays the default. One sample game does not stand for every game. Review boundaries, crops, and copy yourself. There is no claim about ad performance. v1.4.0 does not include CTA motion, generative brand end cards, or karaoke / word-level subtitles. |
+| Confirm before cutting | After import, confirm the production type. You can correct it by hand. An unconfirmed import can be resumed. Understanding and cutting start only after confirmation, then you edit in the shared editor. |
 | Create clips and collections | Generate clips and suggested collections, then adjust their order manually. |
-| Publish (v1.3.2) | After clips are ready, open Publish on a clip. Available in **v1.3.2**. Overseas publishing uses platforms connected on your own Upload-Post account: TikTok, Instagram, YouTube, Facebook, LinkedIn, X, Threads, Pinterest, Bluesky, Discord, Telegram, and Google Business, as available on that account. Bilibili is one account: paste a Cookie once in Settings. It must include SESSDATA, bili_jct, and DedeUserID. Publish now or on a schedule. Title and description are optional and default to the clip title. Burned-in captions default on, and the ~4s title card defaults on. Visibility defaults to private / self where the platform supports it. AutoClip promises that only for TikTok, YouTube, and Bilibili. You can download without publishing. The project page shows publish history and a calendar, and can cancel a schedule that has not gone out. “Plan this week” fills Monday, Wednesday, and Friday at 09:00 for overseas platforms only, not Bilibili. Vertical accounts render 9:16 without a 60-second cut. Bilibili alone renders landscape. LinkedIn or X alone keeps the original frame. Vertical and Bilibili in the same batch are rendered separately. |
-| Auto cover (v1.3.2) | When publishing, a cover can be generated automatically so Bilibili does not reject an empty cover. Default cover and title-card details follow that release’s installer notes. Available in **v1.3.2**. |
+| Publish (v1.3.2) | Since **v1.3.2**, after clips are ready, publish or schedule from the same page. Overseas platforms use Upload-Post; for Bilibili, paste login cookies once in Settings. Defaults stay as private as the platform allows; you can export without publishing. Details: [Publish guide (Chinese)](docs/PUBLISH_UPLOAD_POST.md). |
+| Auto cover (v1.3.2) | When publishing, auto-generate a cover so Bilibili does not reject an empty cover; defaults follow the installer notes. Available in **v1.3.2**. |
 | Export for publishing | Use presets for Douyin, Xiaohongshu, YouTube Shorts, and Bilibili, with burned-in subtitles and title cards. |
-| Choose your models | Use Qwen, OpenAI-compatible APIs, Gemini, SiliconFlow, or local models through Ollama / LM Studio. |
+| Choose your models | Supports Qwen, OpenAI, Gemini, DeepSeek, Doubao Seed, Kimi, GLM, Grok, and local models via Ollama / LM Studio (bring your own API key). |
 | Automate your workflow | Orchestrate runs with the CLI or call the same processing pipeline from an MCP client. |
 
-> Import video → Subtitles / transcription → AI analysis and scoring → Clips and collections → Export
+> Import → Confirm → Default subtitle analysis, or explicitly enabled game visual analysis → Edit in the shared editor → Export
 
 ## Quick start
 
@@ -69,7 +69,7 @@ Download the appropriate installer from [GitHub Releases](https://github.com/zho
 | Windows 10 / 11 · x64 | `-setup.exe` |
 | Intel Mac / Linux | Use Docker or the CLI below |
 
-Desktop installers include Python and FFmpeg. Check the selected release for available platforms and first-launch instructions. After installation, select a model provider in Settings, test the connection, save, and import a video.
+Desktop installers include Python and FFmpeg. Check the selected release for available platforms and first-launch instructions. A Windows package is provided; install, import, and save on a real Windows device are still awaiting device verification. After installation, select a model provider in Settings, test the connection, save, and import a video.
 
 ### 2. Docker / Web
 
@@ -135,11 +135,11 @@ In your MCP client, set `command` to the absolute path of `autoclip` in your vir
 
 | Option | Configuration |
 | --- | --- |
-| Cloud models | Select Qwen, an OpenAI-compatible API, Gemini, or SiliconFlow in Settings and enter an API key. Compatible endpoints support a custom Base URL. |
+| Cloud models | In Settings, choose Qwen, OpenAI, Gemini, DeepSeek, Doubao Seed, Kimi, GLM, or Grok and enter an API key; compatible endpoints can set a Base URL. |
 | Ollama | Default endpoint: `http://localhost:11434/v1`; default model: `qwen2.5:7b`. No API key required. |
 | LM Studio | Load a model and start Local Server at `http://localhost:1234/v1` by default. Select a model actually served by your instance. |
 
-Inside Docker, `localhost` refers to the container. To use a model on the host, configure an address reachable from the container; see the CLI / MCP guide. Video cutting runs locally; cloud model analysis sends transcript text to your selected provider. Video and model downloads still need internet access.
+Inside Docker, `localhost` refers to the container. To use a model on the host, configure an address reachable from the container; see the CLI / MCP guide. Cutting and rendering stay on your machine. The subtitle route sends the relevant subtitles or copy to your selected cloud provider. A cloud visual model also sends sampled frames and the necessary text. Fees depend on that provider. Video and model downloads still need internet access.
 
 ## Frequently asked questions
 
@@ -153,7 +153,7 @@ AutoClip itself stays free and open source under MIT. Cloud providers bill their
 <details>
 <summary>Are my videos uploaded?</summary>
 
-Editing stays on your device. Cloud model analysis sends transcript text to your selected provider. The finished clip leaves the machine only after you click Publish, and only to the platforms you connected. You can also download it without publishing. That Publish page is available in **v1.3.2**. Analytics and error reporting depend on your version and settings; see the privacy notes.
+Cutting and rendering stay on your device. The subtitle route sends the relevant subtitles or copy to your selected provider. A cloud visual model also sends sampled frames and the necessary text. Fees depend on that provider. The finished clip leaves the machine only after you click Publish, and only to the platforms you connected. You can also download it without publishing. That Publish page is available in **v1.3.2**. Analytics and error reporting depend on your version and settings; see the privacy notes.
 
 </details>
 
@@ -174,7 +174,7 @@ Check the failed stage: empty subtitles, model connection failures, an overly hi
 <details>
 <summary>What videos work best? How long does it take?</summary>
 
-Analysis primarily uses transcripts, making interviews, podcasts, lectures, and spoken commentary suitable. Purely visual action or music may work less well. Time depends on duration, hardware, models, and export settings; start with a 3–5 minute clip you provide.
+The default analysis uses subtitles, so interviews, podcasts, lectures, and spoken commentary are a good fit. As of **v1.4.0**, gameplay recordings can use optional visual analysis. One sample game does not stand for every game. Review boundaries, crops, and copy yourself. There is no claim about ad performance. v1.4.0 does not include CTA motion, generative brand end cards, or karaoke / word-level subtitles. Time depends on duration, hardware, models, and export settings; start with a 3–5 minute clip you provide.
 
 For a first clip, try [Jackie Dowling | Stanford Energy Fellow](https://www.youtube.com/watch?v=dtmjLzOtx8I) (Stanford ENERGY). 示例·非托管·自担使用权 (example link, not hosted by AutoClip; you are responsible for usage rights).
 

@@ -124,10 +124,16 @@
 #### 大语言模型设置
 
 **推荐配置**
-- **阿里通义千问**：中文支持好，性价比高
-- **OpenAI GPT**：功能强大，支持多语言
-- **Google Gemini**：免费额度大，响应快速
-- **硅基流动**：国内服务，访问稳定
+- **Qwen**：在设置中选择，填写自己的 API Key
+- **OpenAI**：在设置中选择，填写自己的 API Key；兼容接口可配置 Base URL
+- **Google Gemini**：在设置中选择，填写自己的 API Key
+- **DeepSeek**：在设置中选择，填写自己的 API Key
+- **Doubao Seed**：在设置中选择，填写自己的 API Key
+- **Kimi**：在设置中选择，填写自己的 API Key
+- **GLM**：在设置中选择，填写自己的 API Key
+- **Grok**：在设置中选择，填写自己的 API Key
+- **Ollama**：在设置中选择本地预设。先在本机启动服务并加载模型，无需云端 API Key
+- **LM Studio**：在设置中选择本地预设。先启动 Local Server 并加载模型，无需云端 API Key
 
 ### 性能设置
 

@@ -14,6 +14,14 @@
 [![GitHub issues](https://img.shields.io/github/issues/zhouxiaoka/autoclip?style=flat-square)](https://github.com/zhouxiaoka/autoclip/issues)
 [![License: MIT](https://img.shields.io/github/license/zhouxiaoka/autoclip?style=flat-square)](LICENSE)
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/repositories/25801" alt="AutoClip — GitHub Trending (Trendshift)" width="250" height="55"></a>
+</p>
+
+로컬에서 편집 · 모델 키는 직접 준비
+
+GitHub Trending에 오른 적이 있으며, 현재 실시간 순위가 아닙니다. GitHub Trending과 Trendshift는 서로 다른 순위입니다.
+
 [웹사이트](https://zhouxiaoka.github.io/autoclip_intro/) · [Discussions](https://github.com/zhouxiaoka/autoclip/discussions) · [문제 신고](https://github.com/zhouxiaoka/autoclip/issues)
 
 **데스크톱 설치 파일: [macOS · Apple Silicon](https://github.com/zhouxiaoka/autoclip/releases/latest) · [Windows · x64](https://github.com/zhouxiaoka/autoclip/releases/latest)**
@@ -24,7 +32,7 @@
 
 v1.3.1부터 앱, 웹사이트, README는 중국어, 영어, 일본어, 한국어, 스페인어, 포르투갈어, 러시아어, 프랑스어를 지원합니다. 상단에서 언어를 선택하거나 시스템 설정을 따를 수 있습니다. 원본 미디어와 생성 콘텐츠의 언어는 변경되지 않습니다.
 
-AutoClip은 AI로 영상 자막을 분석하고 하이라이트를 찾아 제목, 클립, 모음 영상을 자동으로 만듭니다. 인터뷰, 팟캐스트, 강의, 라이브 방송 녹화에 적합하며 데스크톱 앱, Docker 웹 UI, CLI / MCP로 사용할 수 있습니다.
+AutoClip은 AI로 하이라이트를 찾고 제목, 클립, 모음 영상을 만듭니다. 기본 경로는 자막 분석이며 인터뷰, 팟캐스트, 강의, 라이브 방송 녹화에 맞습니다. **v1.4.0**부터 게임 화면 시각 분석(멀티모달)을 따로 켤 수 있습니다. 멀티모달 모델을 직접 설정하고, 유료 시각 선별을 명시적으로 켜야 합니다. 가져온 뒤 먼저 확인하고, 확인 후에야 이해와 컷이 시작되며 공유 편집기에서 수정합니다. 데스크톱 앱, Docker 웹 UI, CLI / MCP로 사용할 수 있습니다.
 
 ## 화면 미리보기
 
@@ -32,30 +40,22 @@ AutoClip은 AI로 영상 자막을 분석하고 하이라이트를 찾아 제목
 
 v1.3.0의 실제 웹 화면입니다. 파일 가져오기 영역에서 로컬 영상과 선택 사항인 SRT 자막을 추가할 수 있습니다.
 
-## 커뮤니티 성과
-
-<p align="center">
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/repositories/25801" alt="AutoClip — GitHub Trending" width="250" height="55"></a>
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/trendshift/repositories/25801/daily?language=Python" alt="AutoClip — Trendshift Python daily ranking" width="250" height="55"></a>
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/trendshift/repositories/25801/daily" alt="AutoClip — Trendshift daily ranking, all languages" width="250" height="55"></a>
-</p>
-
-아래 배지는 Trendshift에서 제공합니다. 클릭하면 AutoClip의 순위 기록을 확인할 수 있습니다. GitHub Trending과 Trendshift는 서로 다른 순위이며, 배지는 현재 실시간 순위가 아닌 기록된 성과를 보여 줍니다.
-
 ## 주요 기능
 
 | 기능 | 설명 |
 | --- | --- |
 | 영상 가져오기 | 로컬 영상, YouTube 및 Bilibili 링크를 지원하며 SRT 자막을 추가할 수 있습니다. |
-| 하이라이트 찾기 | 자막에서 개요, 주제별 시간 구간, 하이라이트 점수, 클립 제목을 추출합니다. |
+| 하이라이트 찾기 | 기본적으로 자막에서 개요, 주제별 시간 구간, 하이라이트 점수, 클립 제목을 추출합니다. |
+| 게임 시각 분석(v1.4.0, 선택) | 멀티모달 모델을 직접 설정하고 유료 시각 선별을 명시적으로 켭니다. 확인 후 녹화 속 독립 이벤트를 찾아 편집 가능한 하이라이트와 프로모 초안을 만듭니다. 자막 분석이 기본입니다. 샘플 게임 하나가 모든 게임을 대표하지 않습니다. 경계, 크롭, 문구는 사람이 확인해야 하며 광고 성과를 약속하지 않습니다. 이번 버전에는 CTA 모션, 생성형 브랜드 엔드 카드, 노래방 / 단어 단위 자막이 없습니다. |
+| 확인한 뒤 컷 | 가져온 뒤 제작 유형을 확인하고 직접 고칠 수 있습니다. 확인하지 않은 가져오기는 이어서 할 수 있습니다. 확인 후에 이해와 컷이 시작되고, 공유 편집기에서 수정합니다. |
 | 클립과 모음 영상 | 클립과 추천 모음 영상을 생성하고 순서를 직접 조정할 수 있습니다. |
-| 게시(v1.3.2) | 클립이 준비되면 그 클립에서 게시를 엽니다. **v1.3.2**부터 사용할 수 있습니다. 해외 플랫폼은 본인의 Upload-Post 계정에 연결한 곳입니다. TikTok, Instagram, YouTube, Facebook, LinkedIn, X, Threads, Pinterest, Bluesky, Discord, Telegram, Google Business 중 그 계정에서 쓸 수 있는 곳입니다. Bilibili는 계정 하나입니다. 설정에서 Cookie를 한 번 붙여 넣습니다. SESSDATA, bili_jct, DedeUserID가 있어야 합니다. 지금 올리거나 예약할 수 있습니다. 제목과 설명은 비워 두면 클립 제목을 씁니다. 자막 삽입은 기본으로 켜져 있고, 약 4초 타이틀 카드도 기본으로 켜져 있습니다. 공개 범위는 지원하는 플랫폼에서 기본이 나만 보기입니다. private / 나만 보기를 약속하는 곳은 TikTok, YouTube, Bilibili뿐입니다. 게시하지 않고 받을 수도 있습니다. 프로젝트 페이지에서 게시 기록과 달력을 보고, 아직 나가지 않은 예약을 취소할 수 있습니다. 「이번 주 배치」는 해외만 해당합니다. 아직 올리지 않은 클립을 월·수·금 09:00에 넣고, Bilibili는 넣지 않습니다. 세로 계정은 9:16으로 만들며 60초로 자르지 않습니다. Bilibili만이면 가로 화면입니다. LinkedIn 또는 X만이면 원본 화면입니다. 세로 계정과 Bilibili를 같은 번에 보내면 각각 따로 만듭니다. |
-| 자동 커버(v1.3.2) | 게시할 때 커버를 자동으로 만들 수 있어, Bilibili 빈 커버 거절을 피합니다. 기본 커버와 타이틀 카드의 세부 내용은 그 버전 설치 파일 설명을 따릅니다. **v1.3.2**부터 사용할 수 있습니다. |
+| 게시(v1.3.2) | **v1.3.2**부터, 클립이 준비되면 같은 화면에서 게시하거나 예약할 수 있습니다. 해외 플랫폼은 Upload-Post를 쓰고, Bilibili는 설정에서 로그인 Cookie를 한 번 붙여 넣습니다. 기본값은 플랫폼이 허용하는 범위에서 비공개이며, 게시하지 않고 내보내기만 할 수도 있습니다. 자세한 내용은 [게시 안내(중국어)](docs/PUBLISH_UPLOAD_POST.md). |
+| 자동 커버(v1.3.2) | 게시할 때 커버를 자동으로 만들어, Bilibili가 빈 커버로 거절하지 않게 합니다. 기본값은 설치 안내를 따릅니다. **v1.3.2**부터 사용할 수 있습니다. |
 | 게시용 내보내기 | Douyin, Xiaohongshu, YouTube Shorts, Bilibili 프리셋과 자막 삽입, 타이틀 카드를 지원합니다. |
-| 모델 선택 | Qwen, OpenAI 호환 API, Gemini, SiliconFlow, Ollama / LM Studio의 로컬 모델을 사용할 수 있습니다. |
+| 모델 선택 | Qwen, OpenAI, Gemini, DeepSeek, Doubao Seed, Kimi, GLM, Grok과 Ollama / LM Studio 로컬 모델을 지원합니다(API 키는 직접 준비). |
 | 자동화 | CLI로 작업을 구성하거나 MCP 클라이언트에서 동일한 처리 파이프라인을 호출할 수 있습니다. |
 
-> 영상 가져오기 → 자막 준비 / 음성 전사 → AI 분석 및 평가 → 클립과 모음 영상 생성 → 내보내기
+> 가져오기 → 확인 → 기본 자막 분석, 또는 명시적으로 켠 게임 시각 분석 → 공유 편집기에서 수정 → 내보내기
 
 ## 빠른 시작
 
@@ -69,7 +69,7 @@ v1.3.0의 실제 웹 화면입니다. 파일 가져오기 영역에서 로컬 �
 | Windows 10 / 11 · x64 | `-setup.exe` |
 | Intel Mac / Linux | 아래의 Docker 또는 CLI 사용 |
 
-데스크톱 설치 파일에는 Python과 FFmpeg가 포함됩니다. 지원 플랫폼과 첫 실행 방법은 해당 릴리스를 확인하세요. 설치 후 설정에서 모델 제공업체를 선택하고 연결 테스트와 저장을 마친 뒤 영상을 가져오세요.
+데스크톱 설치 파일에는 Python과 FFmpeg가 포함됩니다. 지원 플랫폼과 첫 실행 방법은 해당 릴리스를 확인하세요. Windows 설치 파일은 제공됩니다. 실제 기기에서의 설치, 가져오기, 저장 확인은 아직입니다. 설치 후 설정에서 모델 제공업체를 선택하고 연결 테스트와 저장을 마친 뒤 영상을 가져오세요.
 
 ### 2. Docker / Web
 
@@ -135,11 +135,11 @@ MCP 클라이언트의 `command`에는 가상 환경 내 `autoclip`의 절대 �
 
 | 방식 | 설정 |
 | --- | --- |
-| 클라우드 모델 | 설정에서 Qwen, OpenAI 호환 API, Gemini 또는 SiliconFlow를 선택하고 API 키를 입력하세요. 호환 API는 Base URL을 변경할 수 있습니다. |
+| 클라우드 모델 | 설정에서 Qwen, OpenAI, Gemini, DeepSeek, Doubao Seed, Kimi, GLM 또는 Grok을 선택하고 API 키를 입력합니다. 호환 엔드포인트는 Base URL을 직접 지정할 수 있습니다. |
 | Ollama | 기본 주소는 `http://localhost:11434/v1`, 모델은 `qwen2.5:7b`입니다. API 키가 필요하지 않습니다. |
 | LM Studio | 모델을 로드하고 Local Server를 시작하세요. 기본 주소는 `http://localhost:1234/v1`이며 서버가 제공하는 모델을 선택해야 합니다. |
 
-Docker 내부의 `localhost`는 컨테이너 자체를 가리킵니다. 호스트의 모델을 사용하려면 컨테이너에서 접근 가능한 주소를 설정하세요. 자세한 내용은 CLI / MCP 가이드에 있습니다. 영상 자르기는 로컬에서 수행하지만 클라우드 모델 분석은 선택한 제공업체에 자막 텍스트를 전송합니다. 영상과 모델 다운로드에는 인터넷이 필요합니다.
+Docker 내부의 `localhost`는 컨테이너 자체를 가리킵니다. 호스트의 모델을 사용하려면 컨테이너에서 접근 가능한 주소를 설정하세요. 자세한 내용은 CLI / MCP 가이드에 있습니다. 컷과 렌더링은 기기에서 이뤄집니다. 자막 경로는 관련 자막이나 문구를 선택한 클라우드 서비스로 보냅니다. 클라우드 시각 모델을 켜면 샘플 프레임과 필요한 텍스트를 보냅니다. 요금은 선택한 서비스에 따릅니다. 영상과 모델 다운로드에는 인터넷이 필요합니다.
 
 ## 자주 묻는 질문
 
@@ -153,7 +153,7 @@ AutoClip 자체는 계속 MIT 라이선스의 무료 오픈 소스입니다. 클
 <details>
 <summary>영상이 업로드되나요?</summary>
 
-편집은 사용자 기기에 남습니다. 클라우드 모델 분석에는 자막 텍스트를 전송합니다. 완성된 클립이 기기를 떠나는 때는 「게시」를 누른 뒤뿐이며, 연결해 둔 플랫폼으로만 갑니다. 게시하지 않고 받을 수도 있습니다. 이 게시 페이지는 **v1.3.2**부터 사용할 수 있습니다. 통계와 오류 보고는 버전 및 설정에 따라 달라지므로 개인정보 안내를 확인하세요.
+컷과 렌더링은 사용자 기기에 남습니다. 자막 경로는 관련 자막이나 문구를 선택한 서비스로 보냅니다. 클라우드 시각 모델을 켜면 샘플 프레임과 필요한 텍스트를 보냅니다. 요금은 선택한 서비스에 따릅니다. 완성된 클립이 기기를 떠나는 때는 「게시」를 누른 뒤뿐이며, 연결해 둔 플랫폼으로만 갑니다. 게시하지 않고 받을 수도 있습니다. 이 게시 페이지는 **v1.3.2**부터 사용할 수 있습니다. 통계와 오류 보고는 버전 및 설정에 따라 달라지므로 개인정보 안내를 확인하세요.
 
 </details>
 
@@ -174,7 +174,7 @@ AutoClip 자체는 계속 MIT 라이선스의 무료 오픈 소스입니다. 클
 <details>
 <summary>어떤 영상에 적합하며 얼마나 걸리나요?</summary>
 
-주로 자막을 분석하므로 인터뷰, 팟캐스트, 강의, 해설 영상에 적합합니다. 시각적 동작이나 음악 중심 영상은 한계가 있을 수 있습니다. 영상 길이, 하드웨어, 모델, 내보내기 설정에 따라 시간이 달라지므로 짧은 영상부터 확인하세요.
+기본 분석은 자막에 기반하므로 인터뷰, 팟캐스트, 강의, 해설 영상에 맞습니다. **v1.4.0**부터 게임 녹화는 시각 분석을 따로 켤 수 있습니다. 샘플 하나로는 모든 게임을 대표하지 않습니다. 경계, 크롭, 문구는 사람이 확인하고, 광고 성과를 약속하지 않습니다. 이번 버전에는 CTA 모션, 생성형 브랜드 엔드 카드, 노래방 / 단어 단위 자막이 없습니다. 영상 길이, 하드웨어, 모델, 내보내기 설정에 따라 시간이 달라지므로 짧은 영상부터 확인하세요.
 
 </details>
 

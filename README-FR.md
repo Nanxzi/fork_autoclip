@@ -14,6 +14,14 @@
 [![GitHub issues](https://img.shields.io/github/issues/zhouxiaoka/autoclip?style=flat-square)](https://github.com/zhouxiaoka/autoclip/issues)
 [![License: MIT](https://img.shields.io/github/license/zhouxiaoka/autoclip?style=flat-square)](LICENSE)
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/repositories/25801" alt="AutoClip — GitHub Trending (Trendshift)" width="250" height="55"></a>
+</p>
+
+Montage en local · apportez votre propre clé de modèle
+
+A déjà figuré sur GitHub Trending ; ce n’est pas un classement en direct. GitHub Trending et Trendshift sont deux classements distincts.
+
 [Site du projet](https://zhouxiaoka.github.io/autoclip_intro/) · [Discussions](https://github.com/zhouxiaoka/autoclip/discussions) · [Signaler un problème](https://github.com/zhouxiaoka/autoclip/issues)
 
 **Programmes d’installation: [macOS · Apple Silicon](https://github.com/zhouxiaoka/autoclip/releases/latest) · [Windows · x64](https://github.com/zhouxiaoka/autoclip/releases/latest)**
@@ -24,7 +32,7 @@
 
 Depuis la v1.3.1, l’application, le site et le README sont disponibles en chinois, anglais, japonais, coréen, espagnol, portugais, russe et français. Choisissez la langue dans l’en-tête ou suivez celle du système. Vos médias et le contenu généré conservent leur langue d’origine.
 
-AutoClip utilise l’IA pour analyser les sous-titres, repérer les temps forts, créer des titres et générer automatiquement des extraits et des compilations. Adapté aux entretiens, podcasts, cours et rediffusions de directs, il propose une application de bureau, une interface web via Docker et un accès CLI / MCP.
+AutoClip utilise l’IA pour repérer les temps forts, créer des titres et générer des extraits et des compilations. L’analyse des sous-titres reste le chemin par défaut et convient aux entretiens, podcasts, cours et rediffusions de directs. Depuis la **v1.4.0**, vous pouvez activer séparément l’analyse visuelle de jeux (multimodale) : configurez votre propre modèle multimodal et activez explicitement le tri visuel payant. Importez, puis confirmez. La compréhension et la découpe ne commencent qu’après confirmation, puis vous modifiez le résultat dans l’éditeur partagé. L’application de bureau, l’interface web via Docker et l’accès CLI / MCP restent disponibles.
 
 ## Aperçu de l’interface
 
@@ -32,30 +40,22 @@ AutoClip utilise l’IA pour analyser les sous-titres, repérer les temps forts,
 
 Interface web réelle de v1.3.0 : ajoutez une vidéo locale dans la zone d’importation, avec des sous-titres SRT facultatifs.
 
-## Reconnaissance de la communauté
-
-<p align="center">
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/repositories/25801" alt="AutoClip — GitHub Trending" width="250" height="55"></a>
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/trendshift/repositories/25801/daily?language=Python" alt="AutoClip — Trendshift Python daily ranking" width="250" height="55"></a>
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/trendshift/repositories/25801/daily" alt="AutoClip — Trendshift daily ranking, all languages" width="250" height="55"></a>
-</p>
-
-Ces badges sont fournis par Trendshift. Cliquez pour consulter les résultats enregistrés d’AutoClip. GitHub Trending et Trendshift sont deux classements distincts ; les badges indiquent des résultats enregistrés, pas une position en temps réel.
-
 ## Fonctionnalités
 
 | Fonction | Description |
 | --- | --- |
 | Importer des vidéos | Utilisez des fichiers locaux ou des liens YouTube et Bilibili, avec des sous-titres SRT facultatifs. |
-| Repérer les temps forts | Extrayez des plans, des plages temporelles par sujet, des scores et des titres à partir des sous-titres. |
+| Repérer les temps forts | Par défaut, plans, plages temporelles, scores et titres sont extraits des sous-titres. |
+| Analyse visuelle de jeux (v1.4.0, facultative) | Configurez votre propre modèle multimodal et activez explicitement le tri visuel payant. Après confirmation, elle repère des événements distincts dans l’enregistrement et produit des temps forts modifiables et des brouillons promo. L’analyse des sous-titres reste le chemin par défaut. Un échantillon de jeu ne représente pas tous les jeux. Vérifiez vous-même les limites, le cadrage et le texte. Aucune promesse de performance publicitaire. Cette version n’inclut pas d’animation CTA, de cartes de fin de marque génératives, ni de karaoké / sous-titres mot à mot. |
+| Confirmer avant de couper | Après l’import, confirmez le type de production. Vous pouvez le corriger à la main. Un import non confirmé peut être repris. La compréhension et la découpe ne commencent qu’après confirmation, puis vous modifiez dans l’éditeur partagé. |
 | Créer des extraits et des compilations | Générez des extraits et des compilations suggérées, puis ajustez leur ordre manuellement. |
-| Publier (v1.3.2) | Quand les extraits sont prêts, ouvrez Publier sur un extrait. Disponible dans la **v1.3.2**. À l’étranger, ce sont les plateformes reliées à votre propre compte Upload-Post : TikTok, Instagram, YouTube, Facebook, LinkedIn, X, Threads, Pinterest, Bluesky, Discord, Telegram et Google Business, selon ce que ce compte a relié. Bilibili, c’est un seul compte : collez un Cookie une fois dans les réglages. Il doit contenir SESSDATA, bili_jct et DedeUserID. Publiez maintenant ou planifiez. Le titre et la description sont facultatifs et reprennent le titre de l’extrait s’ils sont vides. Les sous-titres incrustés sont activés par défaut, comme le carton de titre d’environ 4 secondes. La visibilité par défaut est moi seul / private là où la plateforme le prend en charge. AutoClip ne le promet que pour TikTok, YouTube et Bilibili. Vous pouvez aussi télécharger sans publier. La page du projet montre l’historique et le calendrier, et permet d’annuler une planification qui n’est pas encore partie. « Planifier la semaine » ne concerne que l’étranger : lundi, mercredi et vendredi à 09:00, sans Bilibili. Les comptes verticaux sont rendus en 9:16, sans coupe à 60 secondes. Bilibili seul utilise le paysage. LinkedIn ou X seul garde le cadrage d’origine. Vertical et Bilibili dans le même envoi sont rendus séparément. |
-| Couverture automatique (v1.3.2) | À la publication, une couverture peut être générée automatiquement, pour que Bilibili ne refuse pas une couverture vide. Le détail de la couverture et du carton de titre par défaut suit la notice de cet installeur. Disponible dans la **v1.3.2**. |
+| Publier (v1.3.2) | Depuis la **v1.3.2**, une fois les extraits prêts, publiez-les ou planifiez-les sur la même page. Les plateformes hors de Chine passent par Upload-Post ; pour Bilibili, collez une fois les cookies de connexion dans les réglages. Le réglage par défaut reste aussi privé que la plateforme le permet ; vous pouvez aussi exporter sans publier. Détails : [guide de publication (chinois)](docs/PUBLISH_UPLOAD_POST.md). |
+| Couverture automatique (v1.3.2) | À la publication, une couverture est générée automatiquement pour que Bilibili ne refuse pas une couverture vide ; les réglages par défaut suivent la notice d’installation. Disponible dans la **v1.3.2**. |
 | Exporter pour publier | Profils pour Douyin, Xiaohongshu, YouTube Shorts et Bilibili, avec sous-titres incrustés et cartons de titre. |
-| Choisir les modèles | Utilisez Qwen, des API compatibles OpenAI, Gemini, SiliconFlow ou des modèles locaux via Ollama / LM Studio. |
+| Choisir les modèles | Prend en charge Qwen, OpenAI, Gemini, DeepSeek, Doubao Seed, Kimi, GLM, Grok et les modèles locaux via Ollama / LM Studio (apportez votre propre clé API). |
 | Automatiser les tâches | Orchestrez les traitements avec la CLI ou appelez le même pipeline depuis un client MCP. |
 
-> Importer une vidéo → Sous-titres / transcription → Analyse et évaluation par IA → Extraits et compilations → Export
+> Importer → Confirmer → Analyse des sous-titres par défaut, ou analyse visuelle de jeux activée explicitement → Modifier dans l’éditeur partagé → Exporter
 
 ## Démarrage rapide
 
@@ -69,7 +69,7 @@ Téléchargez le programme d’installation adapté depuis [GitHub Releases](htt
 | Windows 10 / 11 · x64 | `-setup.exe` |
 | Intel Mac / Linux | Utilisez Docker ou la CLI ci-dessous |
 
-Les programmes d’installation incluent Python et FFmpeg. Consultez chaque version pour les plateformes disponibles et les consignes de premier lancement. Après l’installation, choisissez un fournisseur de modèles dans les paramètres, testez la connexion, enregistrez et importez une vidéo.
+Les programmes d’installation incluent Python et FFmpeg. Consultez chaque version pour les plateformes disponibles et les consignes de premier lancement. Un paquet Windows est fourni ; l’installation, l’import et l’enregistrement sur un appareil réel restent à vérifier. Après l’installation, choisissez un fournisseur de modèles dans les paramètres, testez la connexion, enregistrez et importez une vidéo.
 
 ### 2. Docker / Web
 
@@ -135,11 +135,11 @@ Dans votre client MCP, définissez `command` avec le chemin absolu de `autoclip`
 
 | Option | Configuration |
 | --- | --- |
-| Modèles cloud | Choisissez Qwen, une API compatible OpenAI, Gemini ou SiliconFlow et saisissez la clé API. Les services compatibles acceptent une Base URL personnalisée. |
+| Modèles cloud | Dans les réglages, choisissez Qwen, OpenAI, Gemini, DeepSeek, Doubao Seed, Kimi, GLM ou Grok et saisissez la clé API. Les points de terminaison compatibles acceptent une Base URL personnalisée. |
 | Ollama | Adresse par défaut : `http://localhost:11434/v1` ; modèle : `qwen2.5:7b`. Aucune clé API nécessaire. |
 | LM Studio | Chargez un modèle et démarrez Local Server, par défaut sur `http://localhost:1234/v1`. Sélectionnez un modèle disponible sur votre serveur. |
 
-Dans Docker, `localhost` désigne le conteneur lui-même. Pour utiliser un modèle sur l’hôte, configurez une adresse accessible depuis le conteneur ; voir le guide CLI / MCP. Le découpage vidéo est local, mais l’analyse par un modèle cloud envoie le texte des sous-titres au fournisseur choisi. Le téléchargement des vidéos et modèles nécessite une connexion internet.
+Dans Docker, `localhost` désigne le conteneur lui-même. Pour utiliser un modèle sur l’hôte, configurez une adresse accessible depuis le conteneur ; voir le guide CLI / MCP. La découpe et le rendu restent sur votre machine. La voie sous-titres envoie les sous-titres ou le texte concerné au fournisseur cloud choisi. Un modèle visuel cloud envoie aussi des images échantillonnées et le texte nécessaire. Le coût dépend de ce fournisseur. Le téléchargement des vidéos et modèles nécessite une connexion internet.
 
 ## Questions fréquentes
 
@@ -153,7 +153,7 @@ AutoClip lui-même reste gratuit et open source sous MIT. Les fournisseurs cloud
 <details>
 <summary>Mes vidéos sont-elles envoyées sur un serveur ?</summary>
 
-Le montage reste sur votre appareil. Les modèles cloud reçoivent le texte des sous-titres. L’extrait terminé ne quitte la machine qu’après un clic sur Publier, et seulement vers les plateformes que vous avez reliées. Vous pouvez aussi le télécharger sans publier. Cette page Publier est disponible dans la **v1.3.2**. Les statistiques et rapports d’erreurs dépendent de la version et des paramètres ; consultez les notes de confidentialité.
+La découpe et le rendu restent sur votre appareil. La voie sous-titres envoie les sous-titres ou le texte concerné au fournisseur choisi. Un modèle visuel cloud envoie aussi des images échantillonnées et le texte nécessaire. Le coût dépend de ce fournisseur. L’extrait terminé ne quitte la machine qu’après un clic sur Publier, et seulement vers les plateformes que vous avez reliées. Vous pouvez aussi le télécharger sans publier. Cette page Publier est disponible dans la **v1.3.2**. Les statistiques et rapports d’erreurs dépendent de la version et des paramètres ; consultez les notes de confidentialité.
 
 </details>
 
@@ -174,7 +174,7 @@ Vérifiez l’étape en échec : sous-titres vides, connexion au modèle, seuil 
 <details>
 <summary>Quelles vidéos conviennent et combien de temps faut-il ?</summary>
 
-L’analyse repose principalement sur les sous-titres : entretiens, podcasts, cours et commentaires parlés conviennent bien. L’action visuelle ou la musique peuvent donner des résultats limités. Le temps dépend de la durée, du matériel, du modèle et de l’export ; commencez par un court exemple.
+L’analyse par défaut repose sur les sous-titres : entretiens, podcasts, cours et commentaires parlés conviennent bien. Depuis la **v1.4.0**, les enregistrements de jeu peuvent utiliser l’analyse visuelle facultative. Un échantillon ne représente pas tous les jeux. Vérifiez vous-même les limites, le cadrage et le texte. Aucune promesse de performance publicitaire. Cette version n’inclut pas d’animation CTA, de cartes de fin de marque génératives, ni de karaoké / sous-titres mot à mot. Le temps dépend de la durée, du matériel, du modèle et de l’export ; commencez par un court exemple.
 
 </details>
 

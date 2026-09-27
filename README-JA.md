@@ -14,6 +14,14 @@
 [![GitHub issues](https://img.shields.io/github/issues/zhouxiaoka/autoclip?style=flat-square)](https://github.com/zhouxiaoka/autoclip/issues)
 [![License: MIT](https://img.shields.io/github/license/zhouxiaoka/autoclip?style=flat-square)](LICENSE)
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/repositories/25801" alt="AutoClip — GitHub Trending (Trendshift)" width="250" height="55"></a>
+</p>
+
+ローカルで編集 · モデルのキーは自分で用意
+
+GitHub Trending に掲載された実績であり、現在の順位ではありません。GitHub Trending と Trendshift は別のランキングです。
+
 [公式サイト](https://zhouxiaoka.github.io/autoclip_intro/) · [Discussions](https://github.com/zhouxiaoka/autoclip/discussions) · [問題を報告](https://github.com/zhouxiaoka/autoclip/issues)
 
 **デスクトップ版: [macOS · Apple Silicon](https://github.com/zhouxiaoka/autoclip/releases/latest) · [Windows · x64](https://github.com/zhouxiaoka/autoclip/releases/latest)**
@@ -24,7 +32,7 @@
 
 v1.3.1 から、アプリ、公式サイト、README は中国語・英語・日本語・韓国語・スペイン語・ポルトガル語・ロシア語・フランス語に対応しています。ヘッダーで言語を選択するか、システム設定に従えます。素材と生成内容の言語は変わりません。
 
-AutoClip は AI で動画の字幕を分析し、見どころを抽出してタイトルを作成し、クリップやまとめ動画を自動生成します。インタビュー、ポッドキャスト、講義、ライブ配信のアーカイブに適しており、デスクトップアプリ、Docker の Web UI、CLI / MCP から利用できます。
+AutoClip は AI で見どころを見つけ、タイトルを作り、クリップとまとめ動画を作成します。既定は字幕分析で、インタビュー、ポッドキャスト、講義、ライブ配信のアーカイブに向いています。**v1.4.0** から、ゲーム映像の視覚分析（マルチモーダル）を別途有効にできます。マルチモーダルモデルを自分で設定し、有料の視覚スクリーニングを明示的にオンにする必要があります。読み込み後に確認し、確認後に理解とカットが始まり、共通エディタで編集します。デスクトップアプリ、Docker の Web UI、CLI / MCP から利用できます。
 
 ## 画面プレビュー
 
@@ -32,30 +40,22 @@ AutoClip は AI で動画の字幕を分析し、見どころを抽出してタ�
 
 v1.3.0 の実際の Web 画面です。ファイル読み込み欄からローカル動画と任意の SRT 字幕を追加できます。
 
-## コミュニティでの実績
-
-<p align="center">
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/repositories/25801" alt="AutoClip — GitHub Trending" width="250" height="55"></a>
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/trendshift/repositories/25801/daily?language=Python" alt="AutoClip — Trendshift Python daily ranking" width="250" height="55"></a>
-  <a href="https://trendshift.io/repositories/25801"><img src="https://trendshift.io/api/badge/trendshift/repositories/25801/daily" alt="AutoClip — Trendshift daily ranking, all languages" width="250" height="55"></a>
-</p>
-
-以下は Trendshift が提供するバッジです。クリックすると AutoClip の掲載履歴を確認できます。GitHub Trending と Trendshift は別のランキングであり、バッジは記録された実績を示すもので、現在の順位ではありません。
-
 ## 主な機能
 
 | 機能 | 説明 |
 | --- | --- |
 | 動画の読み込み | ローカル動画、YouTube、Bilibili のリンクに対応。SRT 字幕も指定できます。 |
-| 見どころの抽出 | 字幕から概要、トピックの時間範囲、評価スコア、クリップのタイトルを生成します。 |
+| 見どころの抽出 | 既定では字幕から概要、トピックの時間範囲、評価スコア、クリップのタイトルを生成します。 |
+| ゲーム視覚分析（v1.4.0、任意） | マルチモーダルモデルを自分で設定し、有料の視覚スクリーニングを明示的に有効にします。確認後、録画内の独立した出来事を認識し、編集できるハイライトとプロモーション下書きを作ります。字幕分析が既定です。一つのゲームサンプルはすべてのゲームを代表しません。境界、トリミング、文案は人が確認する必要があり、広告効果は約束しません。この版に CTA アニメーション、生成式ブランドエンドカード、カラオケ / 単語単位字幕は含まれません。 |
+| 確認してからカット | 読み込み後に制作タイプを確認し、手動で直せます。未確認の読み込みは再開できます。確認後に理解とカットが始まり、共通エディタで編集します。 |
 | クリップとまとめ動画 | クリップとおすすめのまとめ動画を生成し、順序を手動で変更できます。 |
-| 投稿（v1.3.2） | クリップができたら、そのクリップで投稿を開きます。**v1.3.2** から使えます。海外は、自分の Upload-Post アカウントで接続したプラットフォームです。TikTok、Instagram、YouTube、Facebook、LinkedIn、X、Threads、Pinterest、Bluesky、Discord、Telegram、Google Business のうち、そのアカウントで使えるもの。Bilibili はアカウント 1 つです。設定で Cookie を一度貼り付けます。SESSDATA、bili_jct、DedeUserID が必要です。今すぐ出すか、予約できます。タイトルと説明は任意で、空ならクリップのタイトルです。字幕の焼き込みは既定でオン、約 4 秒のタイトルカードも既定でオン。公開範囲は対応しているプラットフォームでは既定で自分だけです。private / 自分だけを約束するのは TikTok、YouTube、Bilibili だけです。投稿せずに書き出すこともできます。プロジェクトページで投稿履歴とカレンダーを見て、まだ出ていない予約を取り消せます。「今週を組む」は海外だけです。未投稿のクリップを月曜・水曜・金曜の 09:00 に入れ、Bilibili は含みません。縦型アカウントは 9:16 で、60 秒では切りません。Bilibili だけなら横画面。LinkedIn または X だけなら元の画角。縦型と Bilibili を同じ回で出すときは、それぞれ別に書き出します。 |
-| 自動カバー（v1.3.2） | 投稿時にカバーを自動生成でき、Bilibili の空カバー却下を避けます。既定のカバーとタイトルカードの詳細は、その版のインストーラー説明に従います。**v1.3.2** から使えます。 |
+| 投稿（v1.3.2） | **v1.3.2** から、クリップができたら同じ画面で投稿または予約できます。海外のプラットフォームは Upload-Post を使い、Bilibili は設定でログイン Cookie を一度貼り付けます。既定はプラットフォームが許す範囲で非公開です。投稿せずに書き出すこともできます。詳細は [投稿ガイド（中国語）](docs/PUBLISH_UPLOAD_POST.md)。 |
+| 自動カバー（v1.3.2） | 投稿時にカバーを自動生成し、空のカバーで Bilibili に拒まれないようにします。既定はインストール説明に従います。**v1.3.2** から使えます。 |
 | 公開用の書き出し | Douyin、小紅書、YouTube Shorts、Bilibili 向けのプリセット、字幕の焼き込み、タイトルカードに対応します。 |
-| モデルの選択 | Qwen、OpenAI 互換 API、Gemini、SiliconFlow、Ollama / LM Studio のローカルモデルを利用できます。 |
+| モデルの選択 | Qwen、OpenAI、Gemini、DeepSeek、Doubao Seed、Kimi、GLM、Grok、および Ollama / LM Studio のローカルモデルに対応します（API キーは自分で用意）。 |
 | 自動化 | CLI で処理を組み合わせたり、MCP クライアントから同じ処理パイプラインを呼び出したりできます。 |
 
-> 動画を読み込み → 字幕の準備 / 文字起こし → AI 分析・評価 → クリップとまとめ動画を生成 → 書き出し
+> 読み込み → 確認 → 既定の字幕分析、または明示的に有効にしたゲーム視覚分析 → 共通エディタで編集 → 書き出し
 
 ## クイックスタート
 
@@ -69,7 +69,7 @@ v1.3.0 の実際の Web 画面です。ファイル読み込み欄からロー�
 | Windows 10 / 11 · x64 | `-setup.exe` |
 | Intel Mac / Linux | 以下の Docker または CLI を使用 |
 
-デスクトップ版には Python と FFmpeg が含まれます。対応環境と初回起動の手順は各リリースをご確認ください。インストール後、設定でモデルプロバイダーを選び、接続をテストして保存してから動画を読み込みます。
+デスクトップ版には Python と FFmpeg が含まれます。対応環境と初回起動の手順は各リリースをご確認ください。Windows 用インストーラーは提供しています。実機でのインストール、読み込み、保存の確認はこれからです。インストール後、設定でモデルプロバイダーを選び、接続をテストして保存してから動画を読み込みます。
 
 ### 2. Docker / Web
 
@@ -135,11 +135,11 @@ MCP クライアントの `command` に仮想環境内の `autoclip` の絶対�
 
 | 方式 | 設定 |
 | --- | --- |
-| クラウドモデル | 設定で Qwen、OpenAI 互換 API、Gemini、SiliconFlow を選び、API キーを入力します。互換 API は Base URL を変更できます。 |
+| クラウドモデル | 設定で Qwen、OpenAI、Gemini、DeepSeek、Doubao Seed、Kimi、GLM または Grok を選び、API キーを入力します。互換インターフェースでは Base URL を指定できます。 |
 | Ollama | 既定のアドレスは `http://localhost:11434/v1`、モデルは `qwen2.5:7b`。API キーは不要です。 |
 | LM Studio | モデルを読み込み、Local Server を起動します。既定のアドレスは `http://localhost:1234/v1`。サーバーで提供中のモデルを選びます。 |
 
-Docker 内の `localhost` はコンテナ自身を指します。ホストのモデルを使う場合は、コンテナから接続できるアドレスを設定してください。詳細は CLI / MCP ガイドにあります。動画の切り出しはローカルで行いますが、クラウドモデルによる分析では字幕テキストを選択したプロバイダーに送信します。動画やモデルのダウンロードにはネット接続が必要です。
+Docker 内の `localhost` はコンテナ自身を指します。ホストのモデルを使う場合は、コンテナから接続できるアドレスを設定してください。詳細は CLI / MCP ガイドにあります。切り出しとレンダリングは端末上で行います。字幕ルートは選んだクラウドサービスへ関連する字幕または文案を送ります。クラウドの視覚モデルを有効にすると、抽出したフレームと必要なテキストを送ります。料金は選んだサービスによります。動画やモデルのダウンロードにはネット接続が必要です。
 
 ## よくある質問
 
@@ -153,7 +153,7 @@ AutoClip 本体は引き続き無料で、MIT ライセンスのオープンソ�
 <details>
 <summary>動画はアップロードされますか？</summary>
 
-編集はお使いの端末に残ります。クラウドモデルには字幕テキストを送信します。完成したクリップが端末を離れるのは、「投稿」を押したあとだけで、接続済みのプラットフォームに送られます。投稿せずに書き出すこともできます。この投稿ページは **v1.3.2** から使えます。利用統計やエラー報告はバージョンと設定によるため、プライバシー説明をご確認ください。
+切り出しとレンダリングはお使いの端末に残ります。字幕ルートは関連する字幕または文案を選んだサービスへ送ります。クラウドの視覚モデルを有効にすると、抽出したフレームと必要なテキストを送ります。料金は選んだサービスによります。完成したクリップが端末を離れるのは、「投稿」を押したあとだけで、接続済みのプラットフォームに送られます。投稿せずに書き出すこともできます。この投稿ページは **v1.3.2** から使えます。利用統計やエラー報告はバージョンと設定によるため、プライバシー説明をご確認ください。
 
 </details>
 
@@ -174,7 +174,7 @@ AutoClip 本体は引き続き無料で、MIT ライセンスのオープンソ�
 <details>
 <summary>どんな動画に向いていますか？処理時間は？</summary>
 
-主に字幕を分析するため、インタビュー、ポッドキャスト、講義、解説に向いています。映像中心の動作や音楽は十分に評価できない場合があります。時間は動画の長さ、機器、モデル、書き出し設定により異なるので、短い素材から試してください。
+既定の分析は字幕に基づき、インタビュー、ポッドキャスト、講義、解説に向いています。**v1.4.0** から、ゲーム録画は視覚分析を別途有効にできます。一つのサンプルはすべてのゲームを代表しません。境界、トリミング、文案は人が確認し、広告効果は約束しません。この版に CTA アニメーション、生成式ブランドエンドカード、カラオケ / 単語単位字幕は含まれません。時間は動画の長さ、機器、モデル、書き出し設定により異なるので、短い素材から試してください。
 
 </details>
 
