@@ -14,7 +14,9 @@
 | `lib/desktop_build_common.sh` | 上面两个脚本共用的平台无关步骤（便携 Python 下载、pip、后端拷贝、依赖检查、前端构建）。不直接执行。 |
 | `verify_desktop.sh` | 后端冒烟测试：`cargo check` + 起后端，校验 `/health` 与 `/api/v1/video-categories`。被 `nightly-desktop-smoke.yml` 调用。 |
 | `verify_live_publish.py` | 用本机 `UPLOAD_POST_API_KEY` 与 `BILIBILI_COOKIE` 做一次真实私密试发。打小版本前跑。 |
-| `monitor_whisper.py` | 运行期 Whisper 任务监控，被根目录 `start_autoclip.sh` / `check_whisper_status.sh` 调用。 |
+| `runtime/start.sh` | 源码 Web 唯一启动逻辑，支持前台与后台模式。 |
+| `local_services.py` / `runtime/local.sh` | 当前 checkout 的 PID 归属、状态和停止逻辑，供根目录兼容入口共用。 |
+| `runtime/docker.sh` | Docker start/status/stop 共用入口，支持 Compose v2 和开发编排。 |
 
 ## 打包桌面客户端
 
@@ -86,6 +88,16 @@ Tauri 合并，不影响 macOS。
 - `VITE_PUBLIC_SENTRY_DSN` / `SENTRY_DSN`：崩溃上报。不设则 no-op。说明见 `docs/UPDATES_AND_SENTRY.md`
 
 ## CI
+
+Python wheel 的资源和人物取景校验：安装基础依赖与 `opencv-python-headless>=4.10`，
+先构建 wheel，再执行：
+
+```bash
+python scripts/verify_python_wheel.py dist/autoclip_mcp-*-py3-none-any.whl --video backend/assets/example/source.mp4 --report /tmp/wheel-portrait.json
+```
+
+脚本把 wheel 安装到源码目录外，核对 ONNX 与 MIT 许可证，并从真实视频抽帧生成访谈 / 播客两种裁切轨迹。
+不读取旧任务的取景缓存、不调用付费模型；CI 每次运行这个检查。
 
 `.github/workflows/desktop-build.yml`：
 - `workflow_dispatch`：可勾选只构建 macOS 或只构建 Windows

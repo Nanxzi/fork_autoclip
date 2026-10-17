@@ -9,6 +9,7 @@ from typing import NoReturn, Optional
 from celery import Celery
 from backend.core.database import session_scope
 from backend.services.project_service import ProjectService
+from backend.services.cloud_transcription import CloudTranscriptionError
 from backend.utils.thumbnail_generator import generate_project_thumbnail
 from backend.utils.task_submission_utils import submit_video_pipeline_task
 
@@ -39,6 +40,12 @@ class ImportMissingCredential(ImportProcessingError):
     """预期内的密钥或提供商配置问题。用户看到的文案和 last_error_code 不变。"""
 
     kind = "missing-key"
+
+
+class ImportSourceUnusable(ImportProcessingError):
+    """源视频本身不能走字幕路线（比最短片段还短 / 没有音轨又没带字幕）。用户输入，不是故障：不上报 Sentry。"""
+
+    kind = "source-input"
 
 
 # 这些码已经带了「设置 → 转写」去向，归到缺字幕，即使用户原文里提过密钥。
@@ -84,7 +91,11 @@ def classify_import_failure(error: str, error_code: Optional[str] = None) -> typ
     """选出 Sentry / 日志用的异常类型。不改写用户可见文案。"""
     from backend.pipeline.failures import CODE_LLM_NOT_CONFIGURED
 
+    from backend.pipeline.media_precheck import SOURCE_INPUT_CODES
+
     code = (error_code or "").strip()
+    if code in SOURCE_INPUT_CODES:
+        return ImportSourceUnusable
     if code == CODE_LLM_NOT_CONFIGURED or _message_is_missing_credential(error, code):
         return ImportMissingCredential
     if code in _SUBTITLE_FAILURE_CODES:
@@ -100,7 +111,7 @@ def _message_is_missing_credential(error: str, error_code: str) -> bool:
 
 
 def import_failure_kind_for_type(type_name: str) -> Optional[str]:
-    for cls in (ImportSubtitleUnavailable, ImportMissingCredential, ImportProcessingError):
+    for cls in (ImportSubtitleUnavailable, ImportMissingCredential, ImportSourceUnusable, ImportProcessingError):
         if cls.__name__ == type_name:
             return cls.kind
     return None
@@ -165,7 +176,7 @@ def _fail_import(
     raise exc_cls(error)
 
 
-def import_subtitle_failure(speech_error: Optional[str] = None):
+def import_subtitle_failure(speech_error: Optional[str | CloudTranscriptionError] = None):
     """导入关卡没有可用字幕时，沿用流水线同一套失败码和「设置 → 转写」提示。
 
     这只说明下一步该去哪，不表示 Whisper 一定能转写成功。
@@ -174,10 +185,13 @@ def import_subtitle_failure(speech_error: Optional[str] = None):
         HINT_SUBTITLE,
         PipelineFailure,
         failure_from_speech_error,
+        cloud_transcription_failure,
         missing_subtitle_failure,
     )
 
     try:
+        if isinstance(speech_error, CloudTranscriptionError):
+            return cloud_transcription_failure(str(speech_error))
         if speech_error:
             return failure_from_speech_error(speech_error)
         return missing_subtitle_failure()
@@ -199,16 +213,29 @@ def _generate_import_subtitle(task, project_id: str, video_path: str):
     speech_config = None
     srt_path = None
     try:
-        from backend.utils.speech_recognizer import generate_subtitle_for_video
+        from backend.utils.speech_recognizer import generate_subtitle_for_video, configured_whisper_model
         from backend.core.desktop_config import get_desktop_config
 
         config = get_desktop_config()
         speech_config = config.speech_recognition
+        from backend.services.ai_model_settings import load as load_model_settings
+        models = load_model_settings()
+        if models and models.transcription:
+            from copy import deepcopy
+            speech_config = deepcopy(speech_config)
+            speech_config.method = 'whisper_local' if models.transcription.provider == 'whisper_local' else 'auto'
+            if models.transcription.provider == 'whisper_local':
+                speech_config.whisper_config.model_name = models.transcription.model
+            speech_config.enable_fallback = False
 
         logger.info(f"使用语音转写配置 - 方法: {speech_config.method}")
 
-        if speech_config.method == "whisper_local":
-            model = speech_config.whisper_config.model_name
+        if models and models.transcription and models.transcription.provider in {"cloud", "sensevoice_local"}:
+            generated_subtitle = generate_subtitle_for_video(
+                Path(video_path), method="auto", language=speech_config.whisper_config.language,
+                timeout=speech_config.whisper_config.timeout)
+        elif speech_config.method == "whisper_local":
+            model = configured_whisper_model(speech_config.whisper_config.model_name)
             language = speech_config.whisper_config.language
             enable_timestamps = speech_config.whisper_config.enable_timestamps
             enable_punctuation = speech_config.whisper_config.enable_punctuation
@@ -254,6 +281,10 @@ def _generate_import_subtitle(task, project_id: str, video_path: str):
 
         srt_path = str(generated_subtitle)
         logger.info(f"语音转写成功: {srt_path}")
+    except CloudTranscriptionError as error:
+        # Keep provider identity across this legacy boundary; do not infer local ASR from text.
+        logger.warning("云端转写失败: %s", error)
+        return None, error
     except Exception as e:
         logger.error(f"语音转写失败: {str(e)}")
         speech_error = str(e)
@@ -261,14 +292,14 @@ def _generate_import_subtitle(task, project_id: str, video_path: str):
         if speech_config is not None and speech_config.enable_fallback and speech_config.fallback_method != speech_config.method:
             try:
                 logger.info(f"尝试回退方法: {speech_config.fallback_method}")
-                from backend.utils.speech_recognizer import generate_subtitle_for_video
+                from backend.utils.speech_recognizer import generate_subtitle_for_video, configured_whisper_model
 
                 if speech_config.fallback_method == "whisper_local":
                     fallback_config = speech_config.whisper_config
                     generated_subtitle = generate_subtitle_for_video(
                         Path(video_path),
                         language=fallback_config.language,
-                        model=fallback_config.model_name,
+                        model=configured_whisper_model(fallback_config.model_name),
                         method=speech_config.fallback_method
                     )
                 else:
@@ -345,6 +376,12 @@ def process_import_task(self, project_id: str, video_path: str, srt_file_path: O
 
         speech_error = None
         srt_path = srt_file_path
+        # 比最短片段还短、或没有音轨又没带字幕：转写和分析注定白跑，先拦下（RC156 #10/#11）
+        from backend.pipeline.media_precheck import subtitle_route_failure
+        blocked = subtitle_route_failure(video_path, srt_available=bool(srt_path and Path(srt_path).exists()))
+        if blocked:
+            with session_scope() as db:
+                _fail_import(ProjectService(db), project_id, blocked.user_message(), error_code=blocked.code)
         if not srt_path:
             srt_path, speech_error = _generate_import_subtitle(self, project_id, video_path)
 
@@ -402,4 +439,3 @@ def process_import_task(self, project_id: str, video_path: str, srt_file_path: O
         except Exception:
             logger.warning("导入任务失败后更新项目状态失败: %s", project_id, exc_info=True)
         raise
-

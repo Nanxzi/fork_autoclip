@@ -33,7 +33,7 @@ const FeedbackDialog: React.FC<FeedbackDialogProps> = ({ open, onClose, context 
   const [text, setText] = useState('')
   const [contact, setContact] = useState('')
   const [sending, setSending] = useState(false)
-  const [llm, setLlm] = useState<Pick<FeedbackContext, 'llm_provider' | 'llm_model' | 'llm_base_url'>>({})
+  const [llm, setLlm] = useState<Awaited<ReturnType<typeof collectLlmContext>>>({})
   const runtime = useMemo(() => getRuntimeInfo(), [])
 
   const fullContext: FeedbackContext = useMemo(() => ({ ...llm, ...context }), [llm, context])
@@ -45,7 +45,9 @@ const FeedbackDialog: React.FC<FeedbackDialogProps> = ({ open, onClose, context 
     setCategory(context.source === 'failure' ? 'bug' : 'idea')
     collectLlmContext().then(setLlm)
     resolveFeedbackSurvey().then((s) => trackFeedbackOpened(context, s))
-  }, [open, context])
+    // Background project refreshes replace context objects. Keep the user's
+    // typed report until the dialog closes or switches to another project.
+  }, [open, context.source, context.project_id])
 
   const handleClose = () => {
     resolveFeedbackSurvey().then((s) => trackFeedbackDismissed(context, s))
@@ -61,7 +63,7 @@ const FeedbackDialog: React.FC<FeedbackDialogProps> = ({ open, onClose, context 
     try {
       const result = await submitFeedback({ category, text: text.trim(), contact: contact.trim() || undefined, context: fullContext })
       if (result.ok) {
-        message.success(t("已收到。这句话会公开出现在 GitHub。"))
+        message.success(t("已收到。这句话会先到 PostHog，再公开出现在 GitHub。"))
         onClose()
       } else {
         message.info(t("没有直接送达，请在打开的 GitHub 页面再提交一次。"))
@@ -78,6 +80,8 @@ const FeedbackDialog: React.FC<FeedbackDialogProps> = ({ open, onClose, context 
   ]
   if (fullContext.llm_provider) ctxChips.push(`${fullContext.llm_provider}${fullContext.llm_model ? ` · ${fullContext.llm_model}` : ''}`)
   if (fullContext.stage) ctxChips.push(`stage: ${fullContext.stage}`)
+  if (fullContext.error_code) ctxChips.push(fullContext.error_code)
+  if (fullContext.transcription_provider) ctxChips.push(`${fullContext.transcription_provider}${fullContext.transcription_model ? ` · ${fullContext.transcription_model}` : ''}`)
 
   return (
     <Dialog
@@ -86,8 +90,8 @@ const FeedbackDialog: React.FC<FeedbackDialogProps> = ({ open, onClose, context 
       title={context.source === 'failure' ? t("这次没出片，告诉我们哪里不对") : t("反馈")}
       description={
         context.source === 'failure'
-          ? t("错误信息和运行环境会自动附上，你只需要补一句发生了什么。正文会公开出现在 GitHub，不含邮箱。")
-          : t("一句话就够。运行环境会自动附上，不包含视频内容与 API 密钥。正文会公开出现在 GitHub。")
+          ? t("错误信息和运行环境会自动附上，你只需要补一句发生了什么。发送后正文和可选联系方式会先到 PostHog，再公开到 GitHub；邮箱不会公开。")
+          : t("一句话就够。运行环境会自动附上，不包含视频内容与 API 密钥。发送后正文和可选联系方式会先到 PostHog，再公开到 GitHub；邮箱不会公开。")
       }
       footer={
         <>
@@ -134,13 +138,16 @@ const FeedbackDialog: React.FC<FeedbackDialogProps> = ({ open, onClose, context 
         )}
         <input
           className="ac-input"
-          placeholder={t("联系方式（可选，邮箱，不会公开）")}
+          placeholder={t("联系方式（可选，邮箱，只经 PostHog 送达，不会公开）")}
           value={contact}
           onChange={(e) => setContact(e.target.value)}
         />
+        <p className="ac-note">
+          {t("内容和联系方式会发送给开发者，用于回复和创建 GitHub Issue。")}
+        </p>
         <div className="ac-context" title={t("将随反馈一起发送的上下文")}>
           {ctxChips.map((c) => <span key={c}>{c}</span>)}
-          <span>{t("这句话会公开出现在 GitHub，不含邮箱。")}</span>
+          <span>{t("发送后会先到 PostHog，再公开到 GitHub；邮箱不会公开。")}</span>
         </div>
       </div>
     </Dialog>

@@ -2,6 +2,10 @@
 
 [项目首页与八语 README](../README.md) · [English README](../README-EN.md)
 
+## 研究
+
+- [研究笔记 #1：选对瞬间，而不是堆特效](research/2026-10-what-drives-views/article-zh.md) · [English](research/2026-10-what-drives-views/article-en.md) · [Sources](research/2026-10-what-drives-views/sources.md)
+
 ## 1.4 成片包装
 
 - [包装使用指南](FINISHING_GUIDE.md)
@@ -20,8 +24,12 @@
 
 ## 开发与进阶
 
+- [仓库目录与旧文件用途](REPOSITORY_LAYOUT.md)
+- [源码 Web 服务启动](../STARTUP_GUIDE.md)
+
 - [CLI、MCP 与本地模型](CLI_AND_MCP.md)（中文）
-- [多模型提供商配置](MULTI_LLM_PROVIDER_GUIDE.md)（中文）
+- [opencode CLI 接入（MCP 一键注册）](OPENCODE.md)（中文 · [English](OPENCODE.en.md)）
+- [AI 模型与本地转写配置](AI_MODEL_CONFIGURATION.md)（中文）
 - [贡献指南](../CONTRIBUTING.md)（中文）
 - [构建指南](../BUILD_GUIDE.md)（中文）
 - [README 翻译与徽章维护](i18n.md)（中文）

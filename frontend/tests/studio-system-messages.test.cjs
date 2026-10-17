@@ -33,6 +33,44 @@ test('export history renders localized server warnings/restart errors in all eig
  }
 })
 test('all backend processing stages have translations in eight catalogs',()=>{
- const stages=["制作任务未能启动，请重试确认；原素材与已有成片已保留",'导出任务未能启动，请重试；已有成片已保留','下载素材','理解画面','准备素材','快速判断适合的制作类型','开始制作所选内容','制作内容切片','制作精彩高光','制作推广成片','扫描画面，寻找候选高光','复核首选高光的起止边界','组织推广开头与成片草稿','整理高光成片草稿']
+ const stages=["导入任务未能启动，请重试；原素材与已有成片已保留","制作任务未能启动，请重试确认；原素材与已有成片已保留",'导出任务未能启动，请重试；已有成片已保留','下载素材','理解画面','准备素材','快速判断适合的制作类型','开始制作所选内容','制作内容切片','制作精彩高光','制作推广成片','扫描画面，寻找候选高光','复核首选高光的起止边界','组织推广开头与成片草稿','整理高光成片草稿']
  for(const lang of langs)for(const stage of stages){assert.ok(catalogs[lang][stage],lang+stage);if(lang!=='zh')assert.notEqual(catalogs[lang][stage],stage)}
+})
+test('source_blocked download hint matches the backend constant and is translated in eight catalogs',()=>{
+ const src=fs.readFileSync(path.resolve(__dirname,'../../backend/utils/download_recovery.py'),'utf8')
+ const hint=src.match(/^SOURCE_BLOCKED_HINT = '([^']+)'$/m)[1]
+ for(const lang of langs){assert.ok(catalogs[lang][hint],lang);if(lang!=='zh')assert.notEqual(catalogs[lang][hint],hint,lang)}
+ for(const file of ['../src/analytics/feedbackDraft.ts','../src/analytics/workflow.ts'])assert.ok(fs.readFileSync(path.resolve(__dirname,file),'utf8').includes('|source_blocked|'),file)
+})
+test('source_too_short / source_no_audio messages match the backend constants and are translated in eight catalogs',()=>{
+ const src=fs.readFileSync(path.resolve(__dirname,'../../backend/pipeline/media_precheck.py'),'utf8')
+ const literal=name=>{const body=src.match(new RegExp('^'+name+' = \\(?\\n?([\\s\\S]*?)\\)?\\n(?=\\S)','m'))[1];return [...body.matchAll(/"([^"]+)"/g)].map(m=>m[1]).join('')}
+ const messages=['TOO_SHORT_MESSAGE','NO_AUDIO_MESSAGE','NO_AUDIO_AFTER_SCREENING_MESSAGE','NO_AUDIO_VISUAL_MESSAGE'].map(literal)
+ assert.equal(messages.length,4)
+ for(const message of messages){assert.ok(message.length>20,message);for(const lang of langs){assert.ok(catalogs[lang][message],lang+message);if(lang!=='zh')assert.notEqual(catalogs[lang][message],message,lang)}}
+ for(const file of ['../src/analytics/feedbackDraft.ts','../src/analytics/workflow.ts'])assert.ok(fs.readFileSync(path.resolve(__dirname,file),'utf8').includes('|source_too_short|source_no_audio|'),file)
+})
+test('restart recovery messages match the backend constants and are translated in eight catalogs (RC156 #13)',()=>{
+ const src=fs.readFileSync(path.resolve(__dirname,'../../backend/services/studio/store.py'),'utf8')
+ const restart=src.match(/^RESTART_MESSAGE = '([^']+)'$/m)[1]
+ const keys=[restart,'服务已重启，请重试这条','服务已重启，请重新生成封面','服务已重启，请重新导出','服务已重启，请重试分析','重新生成']
+ for(const key of keys)assert.ok(src.includes(key)||key==='重新生成',key)
+ for(const lang of langs)for(const key of keys){assert.ok(catalogs[lang][key],lang+key);if(lang!=='zh')assert.notEqual(catalogs[lang][key],key,lang+key)}
+ for(const file of ['../src/analytics/feedbackDraft.ts','../src/analytics/workflow.ts','../../scripts/ingest_app_feedback.py'])assert.ok(fs.readFileSync(path.resolve(__dirname,file),'utf8').includes('|service_restarted)'),file)
+})
+test('Studio progress messages, including transcription progress, are translated in eight catalogs (RC156 #14)',()=>{
+ const src=fs.readFileSync(path.resolve(__dirname,'../../backend/services/simple_pipeline_adapter.py'),'utf8')
+ const transcribing=src.match(/^STUDIO_TRANSCRIBING_MESSAGE = '([^']+)'$/m)[1]
+ const production=src.match(/^STUDIO_PRODUCTION_MESSAGE = '([^']+)'$/m)[1]
+ const jobs=fs.readFileSync(path.resolve(__dirname,'../../backend/services/studio/jobs.py'),'utf8')
+ const keys=[transcribing,production,'正在生成可发布成片','正在追加平台版本','正在重试成片版本']
+ for(const key of keys.slice(1))assert.ok(jobs.includes(`'${key}'`),key)
+ for(const lang of langs)for(const key of keys){assert.ok(catalogs[lang][key],lang+key);if(lang!=='zh')assert.notEqual(catalogs[lang][key],key,lang+key)}
+})
+test('model-call environment failures are one fixed sentence translated in eight catalogs (RC156 c5)',()=>{
+ const src=fs.readFileSync(path.resolve(__dirname,'../../backend/pipeline/failures.py'),'utf8')
+ const block=src.match(/MODEL_CALL_MESSAGES = \{([\s\S]*?)\n\}/)[1]
+ const messages=[...block.matchAll(/"[a-z_]+": "([^"]+)"/g)].map(m=>m[1])
+ assert.equal(messages.length,3)
+ for(const lang of langs)for(const key of messages){assert.ok(catalogs[lang][key],lang+key);if(lang!=='zh')assert.notEqual(catalogs[lang][key],key,lang+key);assert.ok(!/Connection error|timed out/i.test(catalogs[lang][key]),lang)}
 })

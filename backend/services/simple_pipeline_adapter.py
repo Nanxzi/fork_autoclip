@@ -8,20 +8,97 @@ from typing import Dict, Any, Optional, Callable
 from pathlib import Path
 
 from backend.services.simple_progress import emit_progress, clear_progress
+from backend.core.project_cancellation import ProjectDeleted
 from backend.pipeline.failures import (
-    PipelineFailure, HINT_LOWER_THRESHOLD, HINT_CHECK_FFMPEG,
+    PipelineFailure, HINT_LOWER_THRESHOLD, HINT_CHECK_FFMPEG, http_status_of,
     llm_key_failure, failure_from_speech_error, missing_subtitle_failure,
+    cloud_transcription_failure,
     empty_timeline_failure,
 )
 from backend.pipeline.step1_outline import run_step1_outline
 from backend.pipeline.step2_timeline import run_step2_timeline
 from backend.pipeline.step3_scoring import run_step3_scoring
 from backend.pipeline.step4_title import run_step4_title
+from backend.core import llm_usage
 from backend.pipeline.step5_clustering import run_step5_clustering
 from backend.pipeline.step6_video import run_step6_video
 
 logger = logging.getLogger(__name__)
 
+
+
+STUDIO_TRANSCRIBING_MESSAGE = '正在生成字幕'
+STUDIO_PRODUCTION_MESSAGE = '正在制作可发布成片'
+
+# Transcription is the slow part of SUBTITLE (minutes for a long talk), so it gets almost the whole
+# stage band: sub-steps 5 → 95 of SUBTITLE, i.e. the project bar moves from 10% to 24% with the audio.
+# #301 used sub-steps 25 → 40, which compute_percent turns into only 13% → 16% of the project bar
+# (SUBTITLE is the 10–25% band), so the home card sat at 14–16% for the whole run (RC156 #22).
+TRANSCRIBE_START_SUBPERCENT = 5
+TRANSCRIBE_DONE_SUBPERCENT = 100
+
+
+def transcription_subpercent(fraction: float) -> float:
+    """SUBTITLE sub-step for `fraction` of the audio transcribed."""
+    return TRANSCRIBE_START_SUBPERCENT + 90 * max(0.0, min(1.0, fraction))
+
+
+class TranscriptionProgress:
+    """Show transcription progress as the share of audio already processed (RC156 Win QA #14).
+
+    - Project progress bar (home card, project page): SUBTITLE follows the audio across most of
+      its band (10% → 24% of the whole bar) instead of sitting on fixed checkpoints.
+    - Studio (managed import): analysis shows 「正在生成字幕 · N%」 with N = processed / total audio.
+    Writes are throttled to whole-percent steps at most every `interval` seconds.
+    """
+
+    def __init__(self, project_id: str, interval: float = 2.0):
+        self.project_id = project_id
+        self.interval = interval
+        self.last_percent = -1
+        self.last_at = None
+
+    def __call__(self, fraction: float) -> None:
+        import time
+        from backend.core.project_cancellation import checkpoint
+        checkpoint(self.project_id)  # deleted mid-transcription: stop Whisper (RC156 #12)
+        percent = int(fraction * 100)
+        now = time.monotonic()
+        if percent <= self.last_percent or (percent < 100 and self.last_at is not None and now - self.last_at < self.interval):
+            return
+        self.last_percent, self.last_at = percent, now
+        emit_progress(self.project_id, "SUBTITLE", "正在使用AI生成字幕...", subpercent=transcription_subpercent(fraction))
+        self._studio(lambda analysis: analysis.update(message=STUDIO_TRANSCRIBING_MESSAGE, percent=percent))
+
+    def _studio(self, update) -> None:
+        self.studio_update(self.project_id, update)
+
+    @staticmethod
+    def studio_update(project_id: str, update) -> None:
+        from backend.services.studio import store
+        try:
+            if not (store.directory(project_id) / 'metadata' / 'studio.json').is_file():
+                return  # legacy project: never create Studio state
+            def mutate(data):
+                analysis = data.get('analysis')
+                if isinstance(analysis, dict) and analysis.get('status') == 'running' and analysis.get('phase') == 'production':
+                    update(analysis)
+            store.change(project_id, mutate)
+        except FileNotFoundError:
+            raise
+        except Exception as error:  # noqa: BLE001 - progress display never fails the pipeline
+            logger.debug('Studio transcription progress skipped: %s', type(error).__name__)
+
+    @classmethod
+    def finish_studio(cls, project_id: str) -> None:
+        def restore(analysis):
+            if analysis.get('message') == STUDIO_TRANSCRIBING_MESSAGE:
+                analysis['message'] = STUDIO_PRODUCTION_MESSAGE
+                analysis.pop('percent', None)
+        try:
+            cls.studio_update(project_id, restore)
+        except FileNotFoundError:
+            pass
 
 class SimplePipelineAdapter:
     """简化的流水线适配器，使用固定阶段进度系统"""
@@ -74,14 +151,15 @@ class SimplePipelineAdapter:
             SpeechRecognitionError,
             generate_subtitle_for_video,
         )
+        from backend.services.cloud_transcription import CloudTranscriptionError
         try:
             logger.info(f"开始为视频 {video_path} 自动生成字幕")
             
             # 更新进度
             from backend.services.simple_progress import emit_progress
-            emit_progress(self.project_id, "SUBTITLE", "正在使用AI生成字幕...", subpercent=25)
+            emit_progress(self.project_id, "SUBTITLE", "正在使用AI生成字幕...", subpercent=TRANSCRIBE_START_SUBPERCENT)
             
-            # 使用Whisper本地模型生成字幕
+            # 使用当前所选转写服务生成字幕
             try:
                 from pathlib import Path
                 
@@ -90,31 +168,35 @@ class SimplePipelineAdapter:
                     logger.error(f"视频文件不存在: {video_path}")
                     return None
                 
-                logger.info("尝试使用Whisper本地模型生成字幕")
+                logger.info("尝试使用所选转写服务生成字幕")
                 output_path = metadata_dir / f"{video_file_path.stem}.srt"
-                srt_path = generate_subtitle_for_video(
-                    video_file_path,
-                    output_path=output_path,
-                    method="whisper_local",
-                    model="base",
-                    language="auto"
-                )
+                from backend.utils.transcription_progress import reporting
+                try:
+                    with reporting(TranscriptionProgress(self.project_id)):
+                        srt_path = generate_subtitle_for_video(
+                            video_file_path,
+                            output_path=output_path,
+                            method="auto",
+                            language="auto"
+                        )
+                finally:
+                    TranscriptionProgress.finish_studio(self.project_id)
                 
                 if srt_path and srt_path.exists():
-                    logger.info(f"Whisper生成字幕成功: {srt_path}")
-                    emit_progress(self.project_id, "SUBTITLE", "AI字幕生成完成", subpercent=40)
+                    logger.info(f"转写生成字幕成功: {srt_path}")
+                    emit_progress(self.project_id, "SUBTITLE", "AI字幕生成完成", subpercent=TRANSCRIBE_DONE_SUBPERCENT)
                     return srt_path
-                logger.warning("Whisper生成字幕失败")
+                logger.warning("转写生成字幕失败")
                     
-            except SpeechRecognitionError:
+            except (SpeechRecognitionError, CloudTranscriptionError):
                 raise
             except Exception as e:
-                logger.warning(f"Whisper生成字幕失败: {e}")
+                logger.warning(f"转写生成字幕失败: {e}")
             
-            logger.error("Whisper字幕生成失败")
+            logger.error("字幕生成失败")
             return None
             
-        except SpeechRecognitionError:
+        except (SpeechRecognitionError, CloudTranscriptionError):
             raise
         except Exception as e:
             logger.error(f"自动生成字幕过程中发生错误: {e}")
@@ -137,13 +219,33 @@ class SimplePipelineAdapter:
             f"没有可用的 LLM 提供商（当前选择：{name} · {model}），缺少 API Key 或本地服务地址。",
         )
 
-    async def process_project_sync(self, input_video_path: str, input_srt_path: str) -> Dict[str, Any]:
+    def _find_clips_in_one_pass(self, srt_path: Path, metadata_dir: Path):
+        """Titled clips from one model pass over the whole transcript, or None to use the legacy steps."""
+        from backend.pipeline.clip_finder import find_clips
+        from backend.pipeline.step3_scoring import resolve_min_score_threshold
+        from backend.services.studio.intelligence import text_json
+        from backend.utils.text_processor import TextProcessor
+        llm_usage.set_stage("clip_finder")
+        emit_progress(self.project_id, "ANALYZE", "正在通读全文挑选片段")
+        try:
+            entries = TextProcessor.parse_srt(Path(srt_path))
+            with llm_usage.timed("clip_finder"):
+                return find_clips(entries, text_json, threshold=resolve_min_score_threshold(), metadata_dir=metadata_dir)
+        except ProjectDeleted:
+            raise
+        except Exception as error:  # noqa: BLE001 - the legacy steps still work with any model
+            logger.warning("一次挑片不可用，改用分步分析: %s", error)
+            return None
+
+    async def process_project_sync(self, input_video_path: str, input_srt_path: str, clips_only: bool = False) -> Dict[str, Any]:
         """
         同步处理项目 - 使用简化的进度系统
         
         Args:
             input_video_path: 输入视频路径
             input_srt_path: 输入SRT路径
+            clips_only: 快速出片只需要带标题的片段时间：跳过主题聚类（一次模型调用）与逐片段
+                重新编码（Studio 直接从原片渲染），省下模型费用和大量 CPU。
             
         Returns:
             处理结果
@@ -169,9 +271,18 @@ class SimplePipelineAdapter:
             prompt_files = self._prompt_files(project_dir)
             
             # 阶段1: 素材准备。先确认 LLM 可用，否则后面每一步都是白跑
+            from backend.core.project_cancellation import checkpoint
+            checkpoint(self.project_id)
             emit_progress(self.project_id, "INGEST", "素材准备完成")
+            # 源视频比最短片段还短、或没有音轨又没带字幕：字幕路线注定失败，先拦下，不调用任何模型（RC156 #10/#11）
+            from backend.pipeline import media_precheck
+            blocked = media_precheck.subtitle_route_failure(
+                input_video_path, srt_available=bool(input_srt_path and Path(input_srt_path).exists()))
+            if blocked:
+                raise blocked
             self._preflight_llm()
-            
+            checkpoint(self.project_id)
+
             # 阶段2: 字幕处理
             emit_progress(self.project_id, "SUBTITLE", "开始字幕处理")
             
@@ -180,9 +291,13 @@ class SimplePipelineAdapter:
                 srt_path = Path(input_srt_path)
             else:
                 from backend.utils.speech_recognizer import SpeechRecognitionError
+                from backend.services.cloud_transcription import CloudTranscriptionError
                 logger.warning("没有SRT文件，尝试自动生成字幕")
                 try:
-                    srt_path = await self._generate_subtitle_automatically(input_video_path, metadata_dir)
+                    with llm_usage.timed("transcribe"):
+                        srt_path = await self._generate_subtitle_automatically(input_video_path, metadata_dir)
+                except CloudTranscriptionError as e:
+                    raise cloud_transcription_failure(str(e)) from e
                 except SpeechRecognitionError as e:
                     raise failure_from_speech_error(str(e)) from e
                 if not (srt_path and srt_path.exists()):
@@ -190,84 +305,101 @@ class SimplePipelineAdapter:
                     raise missing_subtitle_failure()
                 logger.info(f"自动生成字幕成功: {srt_path}")
 
-            # Step 1: 大纲提取（字幕为空 / 模型全部失败 / 无法解析时由 step1 自己抛 PipelineFailure）
-            logger.info("执行Step 1: 大纲提取")
-            outlines = run_step1_outline(srt_path, metadata_dir=metadata_dir, prompt_files=prompt_files)
-            emit_progress(self.project_id, "SUBTITLE", "字幕处理完成", subpercent=50)
+            # 快速出片：一次挑片（整段字幕一次给模型）；不可用时回退旧的四步
+            checkpoint(self.project_id)
+            titled_clips = self._find_clips_in_one_pass(srt_path, metadata_dir) if clips_only else None
+            if titled_clips is not None:
+                outlines, timeline_data, scored_clips = [], [], titled_clips
+                emit_progress(self.project_id, "HIGHLIGHT", "片段挑选完成", subpercent=40)
+            else:
+                # Step 1: 大纲提取（字幕为空 / 模型全部失败 / 无法解析时由 step1 自己抛 PipelineFailure）
+                logger.info("执行Step 1: 大纲提取")
+                llm_usage.set_stage("outline")
+                outlines = run_step1_outline(srt_path, metadata_dir=metadata_dir, prompt_files=prompt_files)
+                emit_progress(self.project_id, "SUBTITLE", "字幕处理完成", subpercent=100)  # never behind the transcription band
             
-            # 阶段3: 内容分析
-            emit_progress(self.project_id, "ANALYZE", "开始内容分析")
+                # 阶段3: 内容分析
+                emit_progress(self.project_id, "ANALYZE", "开始内容分析")
             
-            # Step 2: 时间线提取
-            logger.info("执行Step 2: 时间线提取")
-            timeline_data = run_step2_timeline(
-                metadata_dir / "step1_outline.json",
-                metadata_dir=metadata_dir,
-                prompt_files=prompt_files,
-            )
-            if not timeline_data:
-                # 能走到这里说明 _preflight_llm 已通过，连接和密钥不是这条失败的原因（#182）
-                raise empty_timeline_failure(len(outlines))
-            emit_progress(self.project_id, "ANALYZE", "时间线提取完成", subpercent=50)
-            
-            # Step 3: 内容评分
-            logger.info("执行Step 3: 内容评分")
-            scored_clips = run_step3_scoring(
-                metadata_dir / "step2_timeline.json",
-                metadata_dir=metadata_dir,
-                prompt_files=prompt_files,
-            )
-            if not scored_clips:
-                from backend.pipeline.step3_scoring import resolve_min_score_threshold
-                raise PipelineFailure(
-                    "ANALYZE",
-                    f"没有片段通过评分筛选（{len(timeline_data)} 个候选，阈值 {resolve_min_score_threshold()}）。",
-                    HINT_LOWER_THRESHOLD,
+                # Step 2: 时间线提取
+                logger.info("执行Step 2: 时间线提取")
+                llm_usage.set_stage("timeline")
+                timeline_data = run_step2_timeline(
+                    metadata_dir / "step1_outline.json",
+                    metadata_dir=metadata_dir,
+                    prompt_files=prompt_files,
                 )
-            emit_progress(self.project_id, "ANALYZE", "内容分析完成", subpercent=100)
+                if not timeline_data:
+                    # Step 2 normally raises its observed failure. Keep the legacy
+                    # fallback for callers returning [] without diagnostic data.
+                    raise empty_timeline_failure(len(outlines))
+                emit_progress(self.project_id, "ANALYZE", "时间线提取完成", subpercent=50)
             
-            # 阶段4: 片段定位
-            emit_progress(self.project_id, "HIGHLIGHT", "开始片段定位")
-            
-            # Step 4: 标题生成
-            logger.info("执行Step 4: 标题生成")
-            titled_clips = run_step4_title(
-                metadata_dir / "step3_high_score_clips.json",
-                metadata_dir=str(metadata_dir),
-                prompt_files=prompt_files,
-            )
-            emit_progress(self.project_id, "HIGHLIGHT", "标题生成完成", subpercent=40)
-            
-            # Step 5: 主题聚类
-            logger.info("执行Step 5: 主题聚类")
-            collections = run_step5_clustering(
-                metadata_dir / "step4_titles.json",
-                metadata_dir=str(metadata_dir),
-                prompt_files=prompt_files,
-            )
-            emit_progress(self.project_id, "HIGHLIGHT", "片段定位完成", subpercent=100)
-            
-            # 阶段5: 视频导出
-            emit_progress(self.project_id, "EXPORT", "开始视频导出")
-            
-            # Step 6: 视频切割
-            logger.info("执行Step 6: 视频切割")
-            video_result = run_step6_video(
-                metadata_dir / "step4_titles.json",
-                metadata_dir / "step5_collections.json",
-                input_video_path,
-                output_dir=output_dir,
-                clips_dir=str(clips_output_dir),
-                collections_dir=str(collections_output_dir),
-                metadata_dir=str(metadata_dir)
-            )
-            if titled_clips and not video_result.get("clips_generated"):
-                raise PipelineFailure(
-                    "EXPORT",
-                    f"视频切割没有产出任何文件（{len(titled_clips)} 个片段待切）。",
-                    HINT_CHECK_FFMPEG,
+                # Step 3: 内容评分
+                logger.info("执行Step 3: 内容评分")
+                llm_usage.set_stage("scoring")
+                scored_clips = run_step3_scoring(
+                    metadata_dir / "step2_timeline.json",
+                    metadata_dir=metadata_dir,
+                    prompt_files=prompt_files,
                 )
-            emit_progress(self.project_id, "EXPORT", "视频导出完成", subpercent=100)
+                if not scored_clips:
+                    from backend.pipeline.step3_scoring import resolve_min_score_threshold
+                    raise PipelineFailure(
+                        "ANALYZE",
+                        f"没有片段通过评分筛选（{len(timeline_data)} 个候选，阈值 {resolve_min_score_threshold()}）。",
+                        HINT_LOWER_THRESHOLD,
+                    )
+                emit_progress(self.project_id, "ANALYZE", "内容分析完成", subpercent=100)
+            
+                # 阶段4: 片段定位
+                emit_progress(self.project_id, "HIGHLIGHT", "开始片段定位")
+            
+                # Step 4: 标题生成
+                logger.info("执行Step 4: 标题生成")
+                llm_usage.set_stage("titles")
+                titled_clips = run_step4_title(
+                    metadata_dir / "step3_high_score_clips.json",
+                    metadata_dir=str(metadata_dir),
+                    prompt_files=prompt_files,
+                )
+                emit_progress(self.project_id, "HIGHLIGHT", "标题生成完成", subpercent=40)
+            
+            if clips_only:
+                collections, video_result = [], {}
+                emit_progress(self.project_id, "HIGHLIGHT", "片段定位完成", subpercent=100)
+            else:
+                # Step 5: 主题聚类
+                logger.info("执行Step 5: 主题聚类")
+                llm_usage.set_stage("clustering")
+                collections = run_step5_clustering(
+                    metadata_dir / "step4_titles.json",
+                    metadata_dir=str(metadata_dir),
+                    prompt_files=prompt_files,
+                )
+                emit_progress(self.project_id, "HIGHLIGHT", "片段定位完成", subpercent=100)
+            
+                # 阶段5: 视频导出
+                emit_progress(self.project_id, "EXPORT", "开始视频导出")
+            
+                # Step 6: 视频切割
+                logger.info("执行Step 6: 视频切割")
+                video_result = run_step6_video(
+                    metadata_dir / "step4_titles.json",
+                    metadata_dir / "step5_collections.json",
+                    input_video_path,
+                    output_dir=output_dir,
+                    clips_dir=str(clips_output_dir),
+                    collections_dir=str(collections_output_dir),
+                    metadata_dir=str(metadata_dir)
+                )
+                if titled_clips and not video_result.get("clips_generated"):
+                    raise PipelineFailure(
+                        "EXPORT",
+                        f"视频切割没有产出任何文件（{len(titled_clips)} 个片段待切）。",
+                        HINT_CHECK_FFMPEG,
+                    )
+                emit_progress(self.project_id, "EXPORT", "视频导出完成", subpercent=100)
             
             # 阶段6: 处理完成
             emit_progress(self.project_id, "DONE", "处理完成")
@@ -305,6 +437,8 @@ class SimplePipelineAdapter:
                 }
             }
             
+        except ProjectDeleted:
+            raise  # 项目已删除：停下，不写失败进度（RC156 #12）
         except PipelineFailure as e:
             # 明确失败：带阶段和下一步提示，前端失败态 / 应用内反馈直接展示
             error_msg = e.user_message()
@@ -320,6 +454,11 @@ class SimplePipelineAdapter:
             }
             if e.code:
                 failed["error_code"] = e.code
+            # 结果是普通 dict（Studio 经 process_video_pipeline.apply().get() 拿到），异常链到这里就断了：
+            # 把上游 HTTP 状态码写进去，jobs.run_content 再带回 PipelineFailure（RC156 Win QA #1）。
+            status = http_status_of(e)
+            if status is not None:
+                failed["http_status"] = status
             return failed
         except Exception as e:
             error_msg = f"流水线处理失败: {str(e)}"
@@ -327,14 +466,18 @@ class SimplePipelineAdapter:
             
             # 发送失败状态
             emit_progress(self.project_id, "DONE", f"处理失败: {error_msg}")
-            
-            return {
+
+            failed = {
                 "status": "failed",
                 "project_id": self.project_id,
                 "task_id": self.task_id,
                 "error": error_msg,
                 "message": error_msg,
             }
+            status = http_status_of(e)
+            if status is not None:
+                failed["http_status"] = status
+            return failed
 
 
 def create_simple_pipeline_adapter(project_id: str, task_id: str) -> SimplePipelineAdapter:

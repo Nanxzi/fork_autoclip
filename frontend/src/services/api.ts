@@ -1,3 +1,4 @@
+import { projectProperties } from '../analytics/workflow'
 import { t } from '../i18n'
 import axios from 'axios'
 import { Project, Clip, Collection } from '../store/useProjectStore'
@@ -84,6 +85,7 @@ const saveWithSystemDownload = async (
     return { ...result, size }
   }, (result, _startedAt, props) => {
     captureBusinessEvent('media_download_received', { ...props, size_bytes: result.size })
+    captureBusinessEvent('media_download_saved', { ...props, download_mode: 'native', size_bytes: result.size })
   })
   const { message } = await import('antd')
   message.success(t('已保存到下载文件夹'))
@@ -117,8 +119,8 @@ api.interceptors.request.use(
     }
 
     config.baseURL = apiConfigManager.getBaseUrl()
-    // 添加请求ID用于追踪
-    config.metadata = { startTime: Date.now() }
+    // Refresh timing while preserving the retry budget across api.request(config).
+    config.metadata = { ...config.metadata, startTime: Date.now() }
     return config
   },
   (error) => {
@@ -241,6 +243,8 @@ export interface BilibiliDownloadTask {
 
 // 设置相关API
 export const settingsApi = {
+  getOutputBranding: (): Promise<{ enabled: boolean }> => api.get('/settings/output-branding'),
+  setOutputBranding: (enabled: boolean): Promise<{ enabled: boolean }> => api.put('/settings/output-branding', { enabled }),
   // 获取系统配置
   getSettings: (): Promise<any> => {
     return api.get('/settings')
@@ -275,6 +279,8 @@ export const settingsApi = {
     default_model: string
     models: string[]
     catalog: Record<string, string[]>
+    vision_models?: string[]
+    image_models?: string[]
     error?: string
   }> => {
     return api.get('/settings/available-models', {
@@ -316,6 +322,12 @@ export const settingsApi = {
 }
 
 // 项目相关API
+/** Bundled project with real media; creating it does not require a model key. */
+export const exampleProjectApi = {
+  info: () => api.get<unknown, { available: boolean; project_id: string | null }>('/example-project'),
+  create: () => api.post<unknown, { project_id: string; name: string; resolution: 'created' | 'reused'; example_version: number }>('/example-project/create'),
+}
+
 export const projectApi = {
   // 获取视频分类配置
   getVideoCategories: async (): Promise<VideoCategoriesResponse> => {
@@ -326,12 +338,16 @@ export const projectApi = {
   getProjects: async (): Promise<Project[]> => {
     const response = await api.get('/projects/')
     // 处理分页响应结构，返回items数组
-    return (response as any).items || response || []
+    const projects = (response as any).items || response || []
+    if (Array.isArray(projects)) projects.forEach(p => workflow.rememberProject(p.id, projectProperties(p)))
+    return projects
   },
 
   // 获取单个项目
   getProject: async (id: string): Promise<Project> => {
-    return api.get(`/projects/${id}`)
+    const project = await api.get<unknown, Project>(`/projects/${id}`)
+    workflow.rememberProject(id, projectProperties(project))
+    return project
   },
 
   // 上传文件并创建项目
@@ -352,6 +368,7 @@ export const projectApi = {
           'Content-Type': 'multipart/form-data',
         },
       }), (created, startedAt, props) => {
+        workflow.rememberProject(created.id, { material_origin: 'user' })
         workflow.watch('project', created.id, undefined, startedAt)
         captureBusinessEvent('import_finished', { ...props, project_id: created.id, outcome: 'completed', stage: 'upload_received' })
       })
@@ -750,6 +767,7 @@ export interface WhisperRuntimeStatus {
   status: 'unknown' | 'not_installed' | 'installing' | 'installed' | 'error'
   progress: number
   message: string
+  error_code?: string
   log_tail?: string
   platform_supported: boolean
   packages: string[]
@@ -766,6 +784,14 @@ export interface WhisperModel {
   downloadProgress?: number | null
   localPath?: string | null
   errorMessage?: string | null
+  source?: 'huggingface' | 'hf-mirror' | 'custom' | null
+}
+
+/** 200 installed: already on disk. 202 downloading: started in the background; poll the model status. */
+export interface WhisperModelDownload {
+  status: 'installed' | 'downloading'
+  model: string
+  message: string
 }
 
 // 语音识别 / Whisper 运行时与模型管理
@@ -774,7 +800,7 @@ export const speechApi = {
   installRuntime: (): Promise<{ started: boolean; message: string }> => api.post('/whisper/install'),
   uninstallRuntime: (): Promise<{ success: boolean; message: string }> => api.post('/whisper/uninstall'),
   getModels: (): Promise<WhisperModel[]> => api.get('/whisper-models'),
-  downloadModel: (model: string): Promise<unknown> => api.post('/whisper-models/download', { model }),
+  downloadModel: (model: string): Promise<WhisperModelDownload> => api.post('/whisper-models/download', { model }),
   deleteModel: (model: string): Promise<unknown> => api.delete(`/whisper-models/${model}`),
 }
 

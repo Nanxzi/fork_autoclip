@@ -58,14 +58,14 @@ Common sticking points on a first run are in [Discussion #128](https://github.co
 | Option | What you need |
 | --- | --- |
 | Cloud API | A provider account, working API key, access to the selected model, and network access; the provider bills API usage |
-| Ollama | Start Ollama, run `ollama pull qwen2.5:7b`, and select Ollama in AutoClip |
-| LM Studio | Download and load a model, start Local Server, and select an available model in AutoClip |
+| Ollama | Start Ollama, run `ollama pull qwen2.5:7b`, and select Ollama in AutoClip; for long videos raise the context to 16384 or more (`OLLAMA_CONTEXT_LENGTH` or `num_ctx`) |
+| LM Studio | Download and load a model, start Local Server, and select an available model in AutoClip; for long videos set Context Length to 16384 or more when loading the model |
 
 Local presets do not require a cloud API key, but inference uses your hardware. Whisper converts speech to text. The subtitle route uses a language model on subtitles or copy. The visual route needs a multimodal model and sends sampled frames only after you explicitly enable it. Configure each one separately.
 
 ## Updates and backups
 
-Finish or stop active jobs and exit the app. Back up your data directory, then download the new installer from [Releases](https://github.com/zhouxiaoka/autoclip/releases/latest). Users on v1.3.0 or earlier must install v1.3.1 manually. From v1.3.1 onward, use Settings → Application → Check for updates for future releases; installation and restart require your confirmation. Automatic checks run at most once a day. Manual downloads remain available.
+Finish or stop active jobs and exit the app. Back up your data directory, then download the new installer from [Releases](https://github.com/zhouxiaoka/autoclip/releases/latest). Users on v1.3.0 or earlier must install v1.3.1 manually. From v1.3.1 onward, use Settings → Application → Check for updates for future releases; installation and restart require your confirmation. Startup checks remind at most once a day for the same version and can be turned off in Settings or the reminder. Manual checks remain available.
 
 Default desktop data directories:
 
@@ -75,7 +75,7 @@ Default desktop data directories:
 | Windows | `%APPDATA%\AutoClip` |
 | Linux / CLI | `~/.local/share/AutoClip` |
 
-If you set `--data-dir` / `AUTOCLIP_DATA_DIR`, use that directory instead. Logs are usually in its `logs` subdirectory. Back up the project files, database, and settings together. Settings may contain API keys, so protect your backups. Do not uninstall, delete the database, or clear your data directory as a routine troubleshooting step. Do not assume an automatic backup exists.
+If you set `--data-dir` / `AUTOCLIP_DATA_DIR`, use that directory instead. Logs are usually in its `logs` subdirectory. Back up the project files, database, and settings together. Settings may contain API keys, so protect your backups. Do not uninstall, delete the database, or clear your data directory as a routine troubleshooting step. Do not assume an automatic backup exists. Uninstalling on Windows keeps the data directory by default; `%APPDATA%\AutoClip` is deleted only if you tick "Also delete my AutoClip data (projects, settings, API keys)" in the uninstaller, and upgrades never delete it.
 
 ## Help
 

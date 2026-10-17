@@ -1,14 +1,47 @@
+import { trackExperience } from '../../analytics/experience'
 import { useTranslation } from 'react-i18next'
 import { t } from '../../i18n'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { Select } from 'antd'
 import { useNavigate } from 'react-router-dom'
-import { Btn, Segmented, Dialog } from '../../ui'
+import { Btn, Segmented, Dialog, StatusDot } from '../../ui'
+import PlatformPicker from './PlatformPicker'
 import { studioApi, errorText } from './api'
-import { defaultImportOptions, goalLabels, ImportOptions } from './types'
+import { trackAsrReadiness, trackQuickOutputPlatforms } from '../../analytics/studio'
+import { featureSnapshot, useFlag } from '../../analytics/flags'
+import TemplatePicker, { templateImportFields, type HtmlTemplateChoice } from './TemplatePicker'
+import StyleProbeLine from './StyleProbeLine'
+import { readStyle } from './editingStyleSession'
+import { defaultImportOptions, ImportOptions } from './types'
 import ImportPreferences from './ImportPreferences'
+import { speechApi } from '../../services/api'
+import { asrReadinessProperties, repairDestination, submissionBlock, visibleIssues, type ImportReadiness, type ReadinessIssue } from './importReadiness'
 import './studio.css'
+import './quick-output.css'
 
-export default function CreativeImport({ onImported }: { onImported: () => Promise<void> }) {
+function issueCopy(item: ReadinessIssue) {
+  if (item.key === 'analysis') return t('分析模型还没配好。连接一家 AI 服务后再生成。')
+  if (item.code === 'whisper_installing') return t('正在安装本地转写…')
+  if (item.code === 'whisper_not_installed') return t('本地转写还没安装。已有字幕可以直接继续。')
+  if (item.code === 'whisper_model_missing') return t('转写模型还没下载。已有字幕可以直接继续。')
+  if (item.code === 'whisper_model_downloading') return t('正在下载转写模型…')
+  if (item.code === 'whisper_model_failed') return t('转写模型下载失败，请重试。已有字幕可以直接继续。')
+  if (item.code === 'sensevoice_not_ready') return t('SenseVoice 还没准备好。已有字幕可以直接继续。')
+  if (item.code === 'cloud_not_configured') return t('云端转写还没配好。已有字幕可以直接继续。')
+  if (item.key === 'visual') return t('画面分析需要可用的视觉模型。')
+  if (item.key === 'ffmpeg') return t('找不到 FFmpeg，暂时无法处理视频。')
+  return t('导入条件还没准备好。')
+}
+
+function repairLabel(item: ReadinessIssue) {
+  if (item.repair === 'settings_ai') return t('连接 AI 服务')
+  if (item.repair === 'install_whisper') return item.model ? t('下载转写模型') : t('安装 Whisper')
+  if (item.repair === 'settings_transcription') return t('转写设置')
+  if (item.repair === 'settings_vision') return t('视觉设置')
+  return ''
+}
+
+export default function CreativeImport({ onImported, blocked = false, onBlocked }: { onImported: () => Promise<void>; blocked?: boolean; onBlocked?: () => void }) {
   useTranslation()
   const navigate = useNavigate()
   const [source, setSource] = useState<'link' | 'file'>('link')
@@ -16,17 +49,95 @@ export default function CreativeImport({ onImported }: { onImported: () => Promi
   const [file, setFile] = useState<File | null>(null)
   const [subtitle, setSubtitle] = useState<File | null>(null)
   const [options, setOptions] = useState<ImportOptions>({...defaultImportOptions})
+  const templatesOn = useFlag('pkg_templates_v1') === true
+  const visualOn = useFlag('pkg_template_picker_visual') === true
   const [browser, setBrowser] = useState('')
+  const [platforms, setPlatforms] = useState<string[]>(['douyin'])
   const [preferences, setPreferences] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const custom = options.goal !== 'auto' || options.language !== 'source' || options.aspect !== null || options.duration !== null || !!subtitle || !!browser
+  const [readiness, setReadiness] = useState<ImportReadiness | null>(null)
+  const [settled, setSettled] = useState(false)
+  const [repairing, setRepairing] = useState(false)
+  // Installing the runtime is only half of local transcription: download the model right after.
+  const modelAfterRuntime = useRef(false)
+  useEffect(() => {
+    let cancel = false
+    studioApi.readiness()
+      .then(value => {
+        if (cancel) return
+        setReadiness(value)
+        trackAsrReadiness(asrReadinessProperties(value, false))
+      })
+      .catch(() => { if (!cancel) setReadiness(null) })
+      .finally(() => { if (!cancel) setSettled(true) })
+    return () => { cancel = true }
+  }, [])
+  useEffect(() => {
+    const check = readiness?.checks?.transcription
+    if (check?.code === 'whisper_model_missing' && check.model && modelAfterRuntime.current) {
+      modelAfterRuntime.current = false
+      void downloadModel(check.model)
+      return
+    }
+    if (check?.code === 'whisper_install_failed') modelAfterRuntime.current = false
+    if (check?.code !== 'whisper_installing' && check?.code !== 'whisper_model_downloading') return
+    const timer = window.setInterval(() => {
+      studioApi.readiness().then(setReadiness).catch(() => undefined)
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [readiness?.checks?.transcription?.code])
+  const issues = visibleIssues(readiness, !!subtitle)
+  const downloadModel = async (model: string) => {
+    setRepairing(true)
+    setError('')
+    try {
+      await speechApi.downloadModel(model)
+      setReadiness(await studioApi.readiness())
+      setSettled(true)
+    } catch (e) { setError(t(errorText(e))) } finally { setRepairing(false) }
+  }
+  const repair = async (item: ReadinessIssue) => {
+    if (item.repair === 'install_whisper' && item.model) { await downloadModel(item.model); return }
+    if (item.repair === 'install_whisper') {
+      modelAfterRuntime.current = true
+      setRepairing(true)
+      setError('')
+      try {
+        await speechApi.installRuntime()
+        setReadiness(await studioApi.readiness())
+        setSettled(true)
+      } catch (e) { modelAfterRuntime.current = false; setError(t(errorText(e))) } finally { setRepairing(false) }
+      return
+    }
+    if (item.repair === 'settings_ai' && blocked) { onBlocked?.(); return }
+    const destination = repairDestination(item.repair)
+    if (destination) navigate(destination)
+  }
   const submit = async () => {
+    if (blocked) { trackExperience('import_blocked', { reason: 'setup_required', placement: 'home_setup' }); setError(t("请先连接 AI 服务，再导入视频。")); onBlocked?.(); return }
     if (source === 'file' ? !file : !url.trim()) { setError(t("请先添加视频文件或链接")); return }
+    const reason = submissionBlock(readiness, !!subtitle, settled)
+    if (reason === 'pending') { setError(t('正在确认导入条件…')); return }
+    trackAsrReadiness(asrReadinessProperties(readiness, !!subtitle))
+    if (reason === 'analysis') { setError(t('请先连接 AI 服务，再导入视频。')); return }
+    if (reason === 'transcription') { setError(t('还没有可用的转写。可以附上 SRT 字幕，或先准备好转写。')); return }
+    if (reason === 'visual') { setError(t('请先配好画面分析模型，再生成成片。')); return }
+    if (reason === 'ffmpeg') { setError(t('找不到 FFmpeg，无法生成成片。')); return }
     setBusy(true); setError('')
     try {
       const body = new FormData()
       body.append('goal', options.goal); body.append('language', options.language); body.append('instruction', options.instruction)
+      platforms.forEach(platform => body.append('platforms', platform))
+      body.append('auto_start', 'true')
+      body.append('portrait_style', options.portrait_style || 'auto')
+      const portraitChosen = platforms.some(platform => !['bilibili', 'youtube_long', 'original'].includes(platform))
+      const styleKey = templatesOn && visualOn && portraitChosen ? (source === 'file' ? (file ? `file:${file.name}:${file.size}:${file.lastModified}` : null) : (url.trim() ? `url:${url.trim()}` : null)) : null
+      const recommendation = visualOn && styleKey && readStyle().key === styleKey ? readStyle().result?.template : undefined
+      const templateFields = templateImportFields(templatesOn, options.html_template, recommendation)
+      if (templateFields.html_template) body.append('html_template', templateFields.html_template)
+      if (templateFields.recommended_template) body.append('recommended_template', templateFields.recommended_template)
+      body.append('features', JSON.stringify(featureSnapshot()))
       if (options.aspect) body.append('aspect', options.aspect)
       if (options.duration) body.append('duration', String(options.duration))
       if (subtitle) body.append('subtitle', subtitle)
@@ -34,19 +145,31 @@ export default function CreativeImport({ onImported }: { onImported: () => Promi
       if (source === 'file' && file) body.append('video', file)
       else { body.append('url', url.trim()); if (browser) body.append('browser', browser) }
       const result = await studioApi.import(body)
+      trackQuickOutputPlatforms({ platform_count: platforms.length, portrait_style: options.portrait_style || 'auto' })
       // Project refresh should never make a successful import look like an upload failure.
       void onImported().catch(() => undefined)
-      navigate(`/import/${result.project_id}`)
+      navigate(`/project/${result.project_id}`)
     } catch (e) { setError(t(errorText(e))) } finally { setBusy(false) }
   }
   return <section className="ac-creative-import">
-    <h1 className="ac-title">{t("放入视频，AI 帮你剪出精彩。")}</h1>
-    <p className="studio-muted">{t("先识别适合制作的内容，确认后再开始剪辑。")}</p>
+    <h1 className="ac-title">{t("放入视频，直接生成可发布成片。")}</h1>
+    <p className="studio-muted">{t("选择发布平台，AI 会自动挑选内容、完成剪辑与渲染。生成后可直接下载或继续编辑。")}</p>
     <div className="studio-import-box">
       <div className="studio-row"><Segmented ariaLabel={t("导入来源")} value={source} onChange={v=>!busy&&setSource(v)} options={[{value:'link',label:t("链接导入")},{value:'file',label:t("文件导入")}]}/></div>
       {source==='link'?<label className="studio-field"><span className="studio-sr">{t("视频链接")}</span><textarea placeholder={t("粘贴 B 站或 YouTube 视频链接")} value={url} onChange={e=>setUrl(e.target.value)} disabled={busy}/></label>:<label className="studio-file"><span>{file?.name || t("选择一段视频")}</span><input type="file" aria-label={t("视频文件")} accept="video/mp4,video/webm,video/quicktime,.mkv,.avi" disabled={busy} onChange={e=>setFile(e.target.files?.[0] || null)}/><small>MP4 / MOV / MKV / WEBM / AVI</small></label>}
-      <details className="studio-details"><summary>{t("有特别要求？（选填）")}</summary><label className="studio-field"><span className="studio-sr">{t("制作要求")}</span><input aria-label={t("制作要求")} placeholder={t("例如：做一条适合竖屏投放的游戏短片")} maxLength={1000} value={options.instruction} disabled={busy} onChange={e=>setOptions({...options,instruction:e.target.value})}/></label></details>
-      <div className="studio-row studio-import-bottom"><div><span className="studio-muted">{custom?t('已调整偏好 · {{goal}}', { goal: t(goalLabels[options.goal]) }):t("AI 推荐制作类型与参数，由你确认")}</span><button className="studio-link studio-preferences-link" disabled={busy} onClick={()=>setPreferences(true)}>{t("调整偏好")}</button></div><Btn variant="cta" loading={busy} onClick={submit}>{busy?t("正在导入"):t("导入并识别")}</Btn></div>
+      {templatesOn && visualOn && platforms.some(platform => !['bilibili', 'youtube_long', 'original'].includes(platform)) && <StyleProbeLine sourceKey={source === 'file' ? (file ? `file:${file.name}:${file.size}:${file.lastModified}` : null) : (url.trim() ? `url:${url.trim()}` : null)} />}
+      <PlatformPicker value={platforms} onChange={setPlatforms} disabled={busy}/>
+      {templatesOn && platforms.some(platform => !['bilibili', 'youtube_long', 'original'].includes(platform)) && <TemplatePicker visual={visualOn} disabled={busy} value={options.html_template} sourceKey={source === 'file' ? (file ? `file:${file.name}:${file.size}:${file.lastModified}` : null) : (url.trim() ? `url:${url.trim()}` : null)} url={url} file={file} sourceKind={source === 'file' ? (file ? 'file' : 'none') : (url.trim() ? 'link' : 'none')} onChange={(html_template: HtmlTemplateChoice) => setOptions({...options, html_template})}/>}
+      {!templatesOn && platforms.some(platform => !['bilibili', 'youtube_long', 'original'].includes(platform)) && <div className="studio-field"><span>{t('竖版版式')}</span><Select aria-label={t('竖版版式')} disabled={busy} value={options.portrait_style || 'auto'} options={[{value:'auto',label:t('按平台默认')},{value:'interview',label:t('访谈式（人物窗口）')},{value:'podcast',label:t('播客式（满屏）')}]} onChange={portrait_style=>setOptions({...options,portrait_style})}/><small>{t('仅调整竖版布局，字幕与发布文案语言仍按平台。')}</small></div>}
+      {templatesOn && options.html_template === 'classic' && platforms.some(platform => !['bilibili', 'youtube_long', 'original'].includes(platform)) && <div className="studio-field"><span>{t('竖版版式')}</span><Select aria-label={t('竖版版式')} disabled={busy} value={options.portrait_style || 'auto'} options={[{value:'auto',label:t('按平台默认')},{value:'interview',label:t('访谈式（人物窗口）')},{value:'podcast',label:t('播客式（满屏）')}]} onChange={portrait_style=>setOptions({...options,portrait_style})}/><small>{t('仅调整竖版布局，字幕与发布文案语言仍按平台。')}</small></div>}
+      <details className="studio-details"><summary>{t("有特别要求？（选填）")}</summary><label className="studio-field"><span className="studio-sr">{t("制作要求")}</span><input aria-label={t("制作要求")} placeholder={t("例如：保留完整观点或挑战过程")} maxLength={1000} value={options.instruction} disabled={busy} onChange={e=>setOptions({...options,instruction:e.target.value})}/></label></details>
+      {issues.length > 0 && <div className="studio-readiness" role="status">
+        {issues.map(item => <div className="studio-readiness-row" key={item.key}>
+          <StatusDot tone={item.code === 'whisper_installing' || item.code === 'whisper_model_downloading' ? 'accent' : 'muted'} label={issueCopy(item)} />
+          {item.repair !== 'none' && <Btn size="sm" disabled={busy || repairing} loading={repairing && item.repair === 'install_whisper'} onClick={() => void repair(item)}>{repairLabel(item)}</Btn>}
+        </div>)}
+      </div>}
+      <div className="studio-row studio-import-bottom"><div><span className="studio-muted">{t('会按所选平台自动制作，数量由素材内容决定。')}</span><button className="studio-link studio-preferences-link" disabled={busy} onClick={()=>setPreferences(true)}>{t("高级偏好")}</button></div><Btn variant="cta" loading={busy} onClick={submit}>{busy?t("正在生成"):t("生成成片")}</Btn></div>
       {error&&<p className="studio-error" role="alert">{error}</p>}
     </div>
     <Dialog open={preferences} onClose={()=>setPreferences(false)} title={t("制作偏好")} description={t("默认由 AI 匹配。你指定的选项优先，生成后也可以修改。")} footer={<div className="studio-actions"><Btn onClick={()=>{setOptions({...defaultImportOptions,instruction:options.instruction});setSubtitle(null);setBrowser('')}}>{t("恢复自动")}</Btn><Btn variant="cta" onClick={()=>setPreferences(false)}>{t("完成")}</Btn></div>}>

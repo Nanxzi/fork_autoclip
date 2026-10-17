@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.services import whisper_runtime
+from backend.services.whisper_model_manager import WhisperModelManager
 from backend.utils.speech_recognizer import (
     SpeechRecognitionConfig,
     SpeechRecognitionError,
@@ -106,6 +107,49 @@ def test_failure_text_has_no_local_path():
     assert "设置 → 转写" in message
 
 
+@pytest.mark.parametrize("error,expected", [
+    (ImportError(r"DLL load failed C:\Users\secret\runtime.pyd"), "依赖加载失败"),
+    (MemoryError("allocation failed"), "内存不足"),
+    (RuntimeError("Unable to open model.bin"), "模型文件缺失或不完整"),
+    (ConnectionError("https://huggingface.co/model.bin?token=secret"), "下载连接失败"),
+    (PermissionError(r"C:\Users\secret\model.bin"), "访问权限"),
+    (ValueError("File does not have any audio stream"), "音轨"),
+    (RuntimeError("unknown error secret"), "本地 Whisper 生成字幕失败。"),
+    (IndexError("tuple index out of range"), "本地 Whisper 生成字幕失败。"),
+])
+def test_whisper_failure_has_actionable_category_without_raw_details(error, expected):
+    message = describe_whisper_failure(error)
+    assert expected in message
+    assert "secret" not in message
+    # RC156 Win QA #11: internal exception names stay in the log, never in the UI text.
+    assert type(error).__name__ not in message
+
+
+def test_transcription_uses_complete_cached_snapshot_without_downloading(tmp_path, monkeypatch):
+    cached = tmp_path / "hub/models--Systran--faster-whisper-base/snapshots/revision"
+    cached.mkdir(parents=True)
+    for name in ("model.bin", "config.json", "tokenizer.json", "vocabulary.json"):
+        (cached / name).write_bytes(b"fixture")
+    loaded = []
+
+    class FakeModel:
+        def __init__(self, model, **kwargs):
+            loaded.append(model)
+            assert Path(model).is_dir(), "Named model would contact the Hub again"
+
+        def transcribe(self, path, **kwargs):
+            return [SimpleNamespace(start=0, end=1, text="cached")], None
+
+    _install_fake_whisper(monkeypatch, FakeModel)
+    monkeypatch.setattr(whisper_runtime, "get_models_dir", lambda: tmp_path)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    output = tmp_path / "clip.srt"
+    _recognizer()._generate_subtitle_whisper_local(video, output, SpeechRecognitionConfig())
+    assert loaded == [str(cached)]
+    assert "cached" in output.read_text(encoding="utf-8")
+
+
 def _install_fake_whisper(monkeypatch, factory):
     module = types.ModuleType("faster_whisper")
     module.WhisperModel = factory
@@ -113,6 +157,45 @@ def _install_fake_whisper(monkeypatch, factory):
     monkeypatch.setattr(whisper_runtime, "is_installed", lambda: True)
     monkeypatch.setattr(whisper_runtime, "ensure_on_path", lambda: None)
     monkeypatch.setattr(whisper_runtime, "get_models_dir", lambda: Path("/tmp/autoclip-whisper-models"))
+    # No model on disk in these tests: the manager "downloads" a synthetic snapshot path.
+    monkeypatch.setattr(WhisperModelManager, "ensure_downloaded", lambda self, name: Path("/tmp/autoclip-whisper-models/snapshot"))
+
+
+def test_missing_model_is_downloaded_by_the_manager_not_by_faster_whisper(tmp_path, monkeypatch):
+    # RC156 Win QA #6: faster-whisper's own download ignores the mirror fallback.
+    loaded, ensured = [], []
+    snapshot = tmp_path / "snapshot"
+
+    class FakeModel:
+        def __init__(self, model, **kwargs):
+            loaded.append(model)
+
+        def transcribe(self, path, **kwargs):
+            return [SimpleNamespace(start=0, end=1, text="mirrored")], None
+
+    _install_fake_whisper(monkeypatch, FakeModel)
+    monkeypatch.setattr(whisper_runtime, "get_models_dir", lambda: tmp_path)
+    monkeypatch.setattr(WhisperModelManager, "ensure_downloaded", lambda self, name: ensured.append(name) or snapshot)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    _recognizer()._generate_subtitle_whisper_local(video, tmp_path / "clip.srt", SpeechRecognitionConfig())
+    assert ensured == ["base"]
+    assert loaded == [str(snapshot)]
+
+
+def test_failed_model_download_is_a_readable_settings_error(tmp_path, monkeypatch):
+    def fail(self, name):
+        raise RuntimeError("huggingface: ConnectTimeout；hf-mirror: ConnectTimeout")
+
+    _install_fake_whisper(monkeypatch, lambda *a, **k: pytest.fail("faster-whisper must not download by name"))
+    monkeypatch.setattr(whisper_runtime, "get_models_dir", lambda: tmp_path)
+    monkeypatch.setattr(WhisperModelManager, "ensure_downloaded", fail)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    with pytest.raises(SpeechRecognitionError) as caught:
+        _recognizer()._generate_subtitle_whisper_local(video, tmp_path / "clip.srt", SpeechRecognitionConfig())
+    assert "设置 → 转写" in str(caught.value)
+    assert "未安装" not in str(caught.value)
 
 
 def _recognizer():
@@ -123,12 +206,32 @@ def _recognizer():
     return recognizer
 
 
+@pytest.mark.parametrize('cores,expected', [(64, 2), (2, 2), (1, 1), (None, 1)])
+def test_model_constructor_bounds_cpu_threads_and_worker_count(tmp_path, monkeypatch, cores, expected):
+    monkeypatch.delenv('AUTOCLIP_WHISPER_DEVICE', raising=False)
+    monkeypatch.setattr('backend.utils.speech_recognizer.os.cpu_count', lambda: cores)
+    constructed = []
+    class FakeModel:
+        def __init__(self, _model, **kwargs):
+            constructed.append(kwargs)
+        def transcribe(self, _path, **kwargs):
+            return [SimpleNamespace(start=0, end=1, text='bounded')], None
+    _install_fake_whisper(monkeypatch, FakeModel)
+    monkeypatch.setattr(whisper_runtime, 'get_models_dir', lambda: tmp_path)
+    video = tmp_path / 'sample.mp4'
+    video.write_bytes(b'video')
+    _recognizer()._generate_subtitle_whisper_local(video, tmp_path / 'output.srt', SpeechRecognitionConfig())
+    assert len(constructed) == 1
+    assert constructed[0].get('cpu_threads') == expected
+    assert constructed[0].get('num_workers') == 1
+
+
 def test_cpu_encode_error_becomes_readable_and_is_not_logged_with_traceback(tmp_path, monkeypatch, caplog):
     monkeypatch.delenv("AUTOCLIP_WHISPER_DEVICE", raising=False)
     calls = []
 
     class FakeModel:
-        def __init__(self, model, device="auto", compute_type="int8", download_root=None):
+        def __init__(self, model, device="auto", compute_type="int8", download_root=None, **kwargs):
             calls.append((device, compute_type))
 
         def transcribe(self, path, language=None, vad_filter=False, word_timestamps=False):
@@ -155,7 +258,7 @@ def test_vad_fail_retries_without_filter_and_still_writes_srt(tmp_path, monkeypa
     vad_flags = []
 
     class FakeModel:
-        def __init__(self, model, device="auto", compute_type="int8", download_root=None):
+        def __init__(self, model, device="auto", compute_type="int8", download_root=None, **kwargs):
             assert (device, compute_type) == ("cpu", "int8")
 
         def transcribe(self, path, language=None, vad_filter=False, word_timestamps=False):
@@ -209,7 +312,7 @@ def test_blank_segments_are_not_written_as_success(tmp_path, monkeypatch):
     monkeypatch.delenv("AUTOCLIP_WHISPER_DEVICE", raising=False)
 
     class FakeModel:
-        def __init__(self, model, device="auto", compute_type="int8", download_root=None):
+        def __init__(self, model, device="auto", compute_type="int8", download_root=None, **kwargs):
             pass
 
         def transcribe(self, path, language=None, vad_filter=False, word_timestamps=False):
@@ -235,7 +338,7 @@ def test_existing_blank_srt_is_transcribed_again(tmp_path, monkeypatch):
     calls = []
 
     class FakeModel:
-        def __init__(self, model, device="auto", compute_type="int8", download_root=None):
+        def __init__(self, model, device="auto", compute_type="int8", download_root=None, **kwargs):
             pass
 
         def transcribe(self, path, language=None, vad_filter=False, word_timestamps=False):
@@ -258,7 +361,7 @@ def test_existing_blank_srt_is_transcribed_again(tmp_path, monkeypatch):
 
 def test_existing_srt_with_cue_text_skips_whisper(tmp_path, monkeypatch):
     class FakeModel:
-        def __init__(self, model, device="auto", compute_type="int8", download_root=None):
+        def __init__(self, model, device="auto", compute_type="int8", download_root=None, **kwargs):
             raise AssertionError("已有字幕正文时不应再加载 Whisper")
 
     _install_fake_whisper(monkeypatch, FakeModel)
@@ -278,8 +381,9 @@ def test_gpu_runtime_error_retries_on_cpu(tmp_path, monkeypatch):
     constructed = []
 
     class FakeModel:
-        def __init__(self, model, device="auto", compute_type="int8", download_root=None):
+        def __init__(self, model, device="auto", compute_type="int8", download_root=None, **kwargs):
             self.device = device
+            assert 1 <= kwargs['cpu_threads'] <= 2 and kwargs['num_workers'] == 1
             constructed.append((device, compute_type))
 
         def transcribe(self, path, language=None, vad_filter=False, word_timestamps=False):
@@ -299,3 +403,26 @@ def test_gpu_runtime_error_retries_on_cpu(tmp_path, monkeypatch):
     assert ("cpu", "int8") in constructed
     assert result == output
     assert "ok" in output.read_text(encoding="utf-8")
+
+
+def test_pyav19_metadata_api_failure_recovers_via_real_ffmpeg(tmp_path, monkeypatch):
+    import subprocess
+    np = pytest.importorskip('numpy')
+    from backend.utils.ffmpeg_utils import get_ffmpeg_path
+    calls = []
+    class FakeModel:
+        def __init__(self, *args, **kwargs): pass
+        def transcribe(self, audio, **kwargs):
+            calls.append(audio)
+            if isinstance(audio, str):
+                raise TypeError("open() got an unexpected keyword argument 'metadata_errors'")
+            assert isinstance(audio, np.ndarray)
+            assert audio.dtype == np.float32 and 15000 <= len(audio) <= 17000
+            return [SimpleNamespace(start=0, end=1, text='recovered')], None
+    _install_fake_whisper(monkeypatch, FakeModel)
+    video = tmp_path / '中文 sample.wav'
+    subprocess.run([get_ffmpeg_path(), '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', str(video)], check=True)
+    output = tmp_path / 'output.srt'
+    _recognizer()._generate_subtitle_whisper_local(video, output, SpeechRecognitionConfig())
+    assert len(calls) == 2
+    assert 'recovered' in output.read_text()

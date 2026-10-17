@@ -5,6 +5,14 @@ from backend.services.studio.models import Preferences
 from backend.services.studio.subtitle_highlights import make_highlights
 
 
+@pytest.fixture(autouse=True)
+def full_length_synthetic_source(monkeypatch):
+    # The shared `source` fixture is a 3 s clip standing in for a normal-length video. The
+    # too-short precheck (RC156 Win QA #10) has its own tests in test_media_precheck.py.
+    from backend.pipeline import media_precheck
+    monkeypatch.setattr(media_precheck, 'too_short', lambda duration: False)
+
+
 def clip(start, end, score=1):
     return {'start_time':f'00:00:{start:02d},000','end_time':f'00:00:{end:02d},000','generated_title':'Semantic event','final_score':score}
 
@@ -46,11 +54,11 @@ from backend.tests.test_studio import client
 
 def test_subtitle_highlight_confirmation_reaches_shared_editor(client,source,monkeypatch):
     from backend.services.studio import analysis_preferences as ap
-    monkeypatch.setattr(ap,'load',lambda:ap.AnalysisPreferences())
+    monkeypatch.setattr(ap,'load',lambda:ap.AnalysisPreferences(analysis_mode='subtitle'))
     monkeypatch.setattr(intelligence,'vision_call',lambda *a,**k:pytest.fail('vision forbidden'))
     monkeypatch.setattr(jobs,'run_content',lambda *a:[clip(0,1)])
     class Immediate:
-        def submit(self,fn,*args): fn(*args)
+        def submit(self, fn, *args, **kwargs): fn(*args, **kwargs)
     monkeypatch.setattr(jobs,'executor',Immediate())
     imported=client.post('/studio/import',files={'video':('test.mp4',source.read_bytes(),'video/mp4')})
     assert imported.status_code==200

@@ -4,22 +4,89 @@
 
 | 形态 | 一句话 | 入口 |
 |---|---|---|
-| CLI | `autoclip run video.mp4 --provider ollama` 一条命令出片 | `backend/cli.py` |
-| MCP server | 让 Cursor / Claude Code / 任何 MCP 客户端直接调 AutoClip | `backend/mcp_server.py` |
+| CLI | `autoclip produce video.mp4 --platform douyin` 一键出片；`run` 保留旧切片入口 | `backend/cli.py` |
+| MCP server | 让 opencode / Cursor / Claude Code / 任何 MCP 客户端直接调 AutoClip | `backend/mcp_server.py` |
 | 本地模型预设 | 设置页 / CLI 直接选 Ollama、LM Studio，不用填 key | `backend/core/local_presets.py` |
 
-共享逻辑在 `backend/services/local_runner.py`：不起 FastAPI / Celery，在当前进程里跑 `SimplePipelineAdapter`，
+1.5 一键出片共用 `backend/services/quick_output_runner.py` 与桌面 Studio；旧切片入口的共享逻辑在 `backend/services/local_runner.py`：不起 FastAPI / Celery，在当前进程里跑 `SimplePipelineAdapter`，
 产物目录、metadata、SQLite 记录与桌面端一致——CLI 出的片，打开桌面应用首页就能看到。
 
 ---
 
+## 1.5 一键出片（推荐）
+
+CLI / MCP 与桌面使用同一安装包里的版本。先核对 `autoclip --version`；MCP 可调用 `get_version`。两边都读已安装的包，文档不写死版本号。
+本轮验收及同事测试步骤见 [1.5 验收与测试包](RELEASE_1_5.md)。
+
+```bash
+# 使用桌面已经保存的 AI 模型配置；本地文件和 HTTPS 的 B站 / YouTube 链接均可。
+autoclip produce talk.mp4 --srt talk.srt --platform douyin --platform youtube_shorts --json
+autoclip produce talk.mp4 --platform douyin --portrait-style podcast --json
+autoclip outputs PROJECT_ID --export-kits
+```
+
+`produce` 等待制作及自动封面任务完成，返回各版本的 `video_path`、`cover_path`、`post`、`kit_path`。
+`partial` 表示有部分版本失败，已完成的版本仍保留；`failed` 的退出码为 1，输入无效为 2。
+`outputs` 不调用模型；`--export-kits` 在磁盘写 ZIP，文案或封面变化后生成新的包。
+`--timeout` 只停止进度等待，不取消渲染，CLI 会等待后台线程安全收尾；需要后台轮询时优先使用 MCP。
+
+MCP 使用 `start_quick_output`（立即返回 ID）和 `get_quick_output_status`（轮询）：
+
+```json
+{"source":"/absolute/path/talk.mp4","srt_path":"/absolute/path/talk.srt","platforms":["douyin","youtube_shorts"],"portrait_style":"podcast"}
+```
+
+然后调用 `get_quick_output_status`，参数为 `{"project_id":"返回的ID","export_kits":true}`。
+终态为 `completed` / `partial` / `failed`。MCP 握手版本和 `get_version` 都等于当前安装的包版本。
+保持 MCP 服务运行至制作完成；制作进程提前退出时查询会显示 `interrupted`，已完成的视频仍可取回。
+
+竖版版式参数为 `auto` / `interview` / `podcast`。默认抖音、小红书用访谈式，TikTok、Reels、Shorts 用播客式；
+手动选择只改变竖版布局，中文平台仍用中文，英文平台仍用英文，横版保持 16:9。中文满屏字幕按两行分页。
+完整来源保留和人物取景的降级规则仍适用：没有可用的人物轨迹、或原片字幕不能裁切时，会保留完整画面。
+
+支持平台 ID：`douyin`、`xiaohongshu`、`bilibili`、`tiktok`、`instagram_reels`、`youtube_shorts`、`youtube_long`。
+`reels`、`shorts` 是别名；`youtube_long` 当前只生成至少 180 秒的完整片段，较短素材请先选 Shorts 或 B站。
+
+模型、AI 封面和自动片尾共用桌面设置。制作时保持一个入口运行；新 CLI / MCP demo 建议用独立数据目录，
+通过 `autoclip --data-dir /path/to/demo-data produce ...` 或 MCP 环境变量 `AUTOCLIP_DATA_DIR` 指定。
+独立目录需要自己的模型配置，不会读取另一个数据目录的密钥；新入口不使用旧 `run --provider` 的临时覆盖。
+旧 `run` / `clip_video` / `start_clip_job` 继续提供原始切片与合集。这几个 MCP 工具在工具列表里标为 deprecated。
+
+`produce` 的 `--template` 和 `start_quick_output` 的 `template` 都在 `mcp_v2_tools` 打开后才接受：`editorial`（杂志风）、`street`（街头快剪）、`classic`（经典）。不支持的值返回 `invalid_input`。开关关闭时传了风格返回 `disabled`，不传则仍按经典制作。返回结果里的 `template` 是实际用的风格，`requested_template` 是请求值。`pkg_templates_v1` 关闭时，即使请求了杂志风或街头快剪，`template` 也是 `classic`。以返回结果里的风格为准。MCP 在 `mcp_v2_tools` 打开时额外提供 `list_styles` 和 `cancel_job`。该开关默认打开，`AUTOCLIP_FLAGS=mcp_v2_tools=off` 可以关掉，关掉后工具列表里看不到这两个工具。
+
+**默认风格：桌面导入页和 CLI / MCP 不一样，这是有意的。**
+
+| 入口 | 不指定风格时 |
+|---|---|
+| 桌面应用导入页 | 默认选中杂志风（`editorial`），用户可以改成街头快剪或经典 |
+| CLI `produce` 不带 `--template` | 经典（`classic`） |
+| MCP `start_quick_output` 不传 `template` | 经典（`classic`） |
+
+CLI 和 MCP 多半由脚本或助手调用，默认经典可以让同样的调用在升级前后得到同样的成片，也不依赖按需安装的高级包装组件。要杂志风或街头快剪，请显式传 `--template editorial` / `template: "street"`。
+
+任务状态一律带 `progress`、`stage`、`eta`、`poll_after_sec`。按 `poll_after_sec` 再查。没有任务记录时状态是 `unknown`，工作进程已经不在时是 `interrupted`，不会因为项目目录还在就报 `completed`。状态写在数据目录的 `mcp-jobs/`。`cancel_job` 会停掉这条任务的 ffmpeg 和它的子进程，清掉临时文件，已完成的成片保留，状态写成 `cancelled`。
+
+MCP 不再接收 `api_key` 参数。模型密钥用环境变量 `AUTOCLIP_API_KEY`，或桌面应用里已经保存的配置。
+
 ## 1. 安装
+
+一行安装：
+
+```bash
+uvx autoclip-mcp
+npx skills add zhouxiaoka/autoclip
+```
+
+PyPI 发行名是 `autoclip-mcp`。`uvx autoclip-mcp` 会安装这个包并运行 MCP 入口，包里的 CLI 命令仍是 `autoclip`。wheel 文件名是 `autoclip_mcp-<version>-py3-none-any.whl`。已发布的 ZIP 里用 `autoclip_mcp-*-py3-none-any.whl`。
+
+从源码安装仍可用。在已克隆的仓库根目录执行：
 
 ```bash
 git clone https://github.com/zhouxiaoka/autoclip.git && cd autoclip
 python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-pip install -e .            # 得到 autoclip / autoclip-mcp 两个命令
+python -m pip install -r requirements.txt
+python -m pip install --no-deps .
+autoclip --version
 ```
 
 不装包也能用：`python -m backend.cli ...`（在仓库根目录）。
@@ -45,7 +112,8 @@ autoclip doctor
 autoclip run talk.mp4                                  # 用桌面应用设置页里配好的模型
 autoclip run talk.mp4 --provider ollama                # 本地 Ollama（默认 qwen2.5:7b，无需 key）
 autoclip run talk.mp4 --provider lmstudio --model qwen2.5-7b-instruct
-autoclip run talk.mp4 --provider openai --base-url https://api.deepseek.com/v1 --model deepseek-chat --api-key sk-...
+# 模型密钥只放在环境变量 AUTOCLIP_API_KEY 里（先在 shell 里设置），不要写进命令
+autoclip run talk.mp4 --provider openai --base-url https://api.deepseek.com/v1 --model deepseek-chat
 autoclip run talk.mp4 --srt talk.srt --category knowledge --min-score 0.6
 autoclip run talk.mp4 --json                           # 给脚本 / agent：stdout 只有一个 JSON
 
@@ -63,6 +131,7 @@ autoclip publish --list-profiles                        # 已配置的 Upload-Po
 约定：
 - 进度、说明走 **stderr**；**stdout** 只放 `project_id`（或 `--json` 时的 JSON），方便管道。
 - 退出码：`0` 成功 · `1` 流水线失败 · `2` 参数 / 环境错误。
+- 模型密钥推荐用环境变量 `AUTOCLIP_API_KEY`，或桌面应用里已经保存的配置。`--api-key` 仍可临时传入，会在 stderr 打印弃用警告。`autoclip publish --api-key` 是 Upload-Post 的密钥，与 `AUTOCLIP_API_KEY` 无关。
 - `--provider` 等模型参数不改用户的正式设置，只在数据目录写一份 `cli-settings.json`。
 - 视频默认**硬链接**进项目目录（不占双份空间），跨盘时自动复制；`--copy` 强制复制。
 - `--no-db` 不写 SQLite（桌面应用里就看不到这个项目）。
@@ -95,6 +164,45 @@ autoclip publish --list-profiles                        # 已配置的 Upload-Po
 
 stdio 传输，依赖 `mcp` Python SDK（`requirements.txt` 已锁定；兼容 1.x `FastMCP` 与 2.x `MCPServer`）。
 
+用 `uvx` 启动（推荐）：`uvx autoclip-mcp` 不带参数就直接启动 stdio MCP server，不需要其他参数，一般写进客户端配置、由客户端启动。第一次运行会下载依赖，可能要几十秒。模型密钥用环境变量 `AUTOCLIP_API_KEY` 传给 server，不要写进 args。
+
+**Claude Code**：
+
+```bash
+claude mcp add-json autoclip '{"command":"uvx","args":["autoclip-mcp"],"env":{"AUTOCLIP_API_KEY":"${AUTOCLIP_API_KEY}"}}'
+```
+
+单引号让 `${AUTOCLIP_API_KEY}` 原样写进配置，Claude Code 启动 server 时再从环境变量展开，配置文件和 shell 历史里都没有明文密钥。不要用 `--env AUTOCLIP_API_KEY=$AUTOCLIP_API_KEY`：shell 会先展开，把密钥明文写进 `~/.claude.json`。也可以不设这个变量，直接在桌面应用的设置里填模型密钥。
+
+**Cursor**（`~/.cursor/mcp.json`，或项目里的 `.cursor/mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "autoclip": {
+      "command": "uvx",
+      "args": ["autoclip-mcp"],
+      "env": { "AUTOCLIP_API_KEY": "${env:AUTOCLIP_API_KEY}" }
+    }
+  }
+}
+```
+
+**Codex**（`~/.codex/config.toml`）：
+
+```toml
+[mcp_servers.autoclip]
+command = "uvx"
+args = ["autoclip-mcp"]
+env_vars = ["AUTOCLIP_API_KEY"]   # 从当前环境转发，不在配置文件里写明文密钥
+startup_timeout_sec = 120         # 默认 10 秒，第一次 uvx 下载依赖不够用
+tool_timeout_sec = 3600           # 默认 60 秒；clip_video 要几分钟，或改用 start_clip_job + get_job_status
+```
+
+模型密钥也可以在桌面应用的设置里填；已经用桌面应用保存过模型配置时，可以不传 `AUTOCLIP_API_KEY`。
+
+从源码安装时：
+
 **Cursor**（`~/.cursor/mcp.json`）或 **Claude Desktop**（`claude_desktop_config.json`）：
 
 ```json
@@ -113,6 +221,20 @@ claude mcp add autoclip -- /path/to/autoclip/venv/bin/autoclip mcp
 
 没装包时把 `command` 换成 `/path/to/autoclip/venv/bin/python`，`args` 为 `["-m", "backend.mcp_server"]`，
 并加 `"env": {"PYTHONPATH": "/path/to/autoclip"}`。
+
+**OpenCode**（`~/.config/opencode/opencode.json`，或项目里的 `opencode.json`；带注释的 `.jsonc` 也支持）：
+
+```json
+{
+  "mcp": {
+    "autoclip": { "type": "local", "command": ["/path/to/autoclip/venv/bin/autoclip", "mcp"], "enabled": true }
+  }
+}
+```
+
+也可以让 AutoClip 自己写：`autoclip mcp install opencode`（`--scope project --dir .` 写项目配置、`--print` 只打印片段、
+`--force` 在现有配置带注释时先备份再重写）。重装会保留同名条目里的 `environment` / `timeout` 等自定义字段；存在
+`opencode.jsonc` 时优先写它，两份配置冲突会在写入前直接拒绝。接入后在 opencode 里给一个视频路径即可出片，详见 `docs/OPENCODE.md`。
 
 工具：
 
@@ -135,7 +257,7 @@ claude mcp add autoclip -- /path/to/autoclip/venv/bin/autoclip mcp
 - 任务状态在内存里；server 重启后 `get_job_status` 会退回从磁盘读项目结果。
 
 **Agent skill**：`skills/autoclip/SKILL.md` 教 agent 何时用哪个工具、参数怎么选、结果怎么呈现、切片为 0 怎么办。
-复制到 `~/.cursor/skills/autoclip/` 或 `~/.claude/skills/autoclip/` 即生效。
+复制到 `~/.cursor/skills/autoclip/`、`~/.claude/skills/autoclip/` 或 `~/.config/opencode/skills/autoclip/` 即生效。
 
 ---
 

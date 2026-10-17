@@ -1,13 +1,101 @@
 /** Versioned business telemetry. Only explicit UI operations enroll projects. */
 export type Properties = Record<string, string | number | boolean | null | undefined>
-export type Watch = { kind: 'project' | 'export' | 'bilibili' | 'youtube' | 'studio-screen' | 'studio-production' | 'studio-export'; id: string; projectId?: string; since: number; seen: string[]; settled?: boolean }
+export type Watch = { kind: 'project' | 'export' | 'bilibili' | 'youtube' | 'studio-screen' | 'studio-production' | 'studio-export' | 'studio-generation' | 'studio-cover' | 'studio-variant' | 'framing-runtime'; id: string; projectId?: string; since: number; seen: string[]; settled?: boolean; properties?: Properties; token?: string; runId?: string }
 export const WORKFLOW_KEY = 'autoclip.analytics.workflow.v2'
 const TTL = 7 * 86400000
 const LIMIT = 50
+const CONTEXT_KEY = "autoclip.analytics.context.v1"
+export function telemetryId(): string { return `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}` }
+type Context = { props: Properties; updated: number; artifacts: Record<string, string> }
+
+export function projectProperties(project: { settings?: Record<string, unknown>; processing_config?: Record<string, unknown>; material_origin?: unknown; example_version?: unknown }): Properties {
+  const settings = project.processing_config || project.settings
+  const origin = project.material_origin || (settings ? settings.example === true ? 'sample' : 'user' : 'unknown')
+  return safeStudioProperties({ material_origin: origin, example_version: project.example_version || settings?.example_version })
+}
+
+/** Explicit property contract: never spread user/model data into a payload. */
+export function safeStudioProperties(value: Record<string, unknown> | null = {}): Properties {
+  const input = value && typeof value === 'object' ? value : {}
+  const out: Properties = { studio_schema_version: 2 }
+  const enums: Record<string, string[]> = {
+    strategy_id: ['douyin', 'tiktok', 'instagram_reels', 'youtube_shorts', 'youtube_long', 'bilibili', 'xiaohongshu', 'original'],
+    material_origin: ['sample', 'user', 'unknown'], layout: ['crop', 'fit', 'blur', 'window'],
+    generation_reason: ['content_complete', 'platform_append', 'platform_ineligible'],
+    trigger: ['auto', 'manual', 'portrait_preset', 'hover', 'focus', 'keyboard', 'button', 'select'], framing_outcome: ['framed', 'no_detection'],
+    framing_status: ['installed', 'installing', 'failed', 'missing', 'not_installed', 'error'],
+    source_type: ['file', 'youtube', 'bilibili', 'other_url', 'visual_event', 'content_clip', 'studio', 'legacy'],
+    analysis_mode: ['subtitle', 'visual', 'auto'], goal: ['content', 'highlight', 'promo', 'auto'],
+    aspect: ['original', 'portrait', 'landscape', 'auto'],
+    portrait_style: ['auto', 'interview', 'podcast'], artifact_type: ['video', 'publish_kit'],
+    recommendation_mode: ['ai', 'local', 'manual', 'fallback'],
+    subtitle_status: ['available', 'missing', 'invalid', 'unreadable', 'too_large'],
+    outcome: ['completed', 'failed', 'partial', 'downgraded', 'skipped', 'recommended', 'manual', 'fallback', 'scheduled', 'inbox', 'unknown', 'auto_started'],
+    download_mode: ['native', 'browser'], gateway: ['bilibili', 'upload-post'],
+    title_style: ['plain', 'impact', 'card', 'comic', 'neon', 'arena', 'editorial', 'pixel', 'frosted'],
+    share_target: ['copy_caption', 'use_case_discussion'],
+    output_rating: ['ready', 'needs_edit', 'unusable'],
+    template: ['interview_zh', 'podcast_en', 'landscape', 'none', 'editorial', 'street', 'classic'],
+    requested_template: ['interview_zh', 'podcast_en', 'landscape', 'none', 'editorial', 'street', 'classic'],
+    from_template: ['interview_zh', 'podcast_en', 'landscape', 'none', 'editorial', 'street', 'classic'],
+    to_template: ['interview_zh', 'podcast_en', 'landscape', 'none', 'editorial', 'street', 'classic'],
+    recommended: ['interview_zh', 'podcast_en', 'landscape', 'none', 'editorial', 'street', 'classic'],
+    recommended_template: ['interview_zh', 'podcast_en', 'landscape', 'none', 'editorial', 'street', 'classic'],
+    reason_code: ['seated_interview', 'street_quick', 'speech', 'default', 'timeout'],
+    flag_variant: ['visual', 'text'],
+    source_kind: ['link', 'file', 'none'],
+    input: ['mouse', 'keyboard'],
+    error_kind: ['decode', 'stalled', 'unsupported', 'unknown'],
+    encoder: ['libx264', 'h264_nvenc', 'h264_qsv', 'h264_amf', 'h264_videotoolbox'],
+    downgrade_reason: ['none', 'over_budget', 'missing_runtime', 'intel_mac_unverified', 'rank', 'flag_off', 'capture', 'encode'],
+    failure_reason: ['none', 'capture', 'encode', 'runtime', 'timeout', 'unknown'],
+    os: ['darwin', 'win32', 'linux'],
+    stage: ['pre_import', 'results_chip', 'editor'],
+    packaging_style: ['classic', 'boxed', 'spotlight', 'pop', 'cinematic'],
+    framing: ['speaker', 'full_frame', 'full_frame_pending', 'full_frame_captions'],
+    qa_checker: ['avsync', 'face', 'loudness', 'jitter', 'ending'],
+    qa_outcome: ['pass', 'fail', 'skip'],
+    qa_bucket: ['lt40', '40_80', '80_200', 'gt200', 'start_only', 'none', 'lt10', '10_40', 'gt40', 'in_target', 'quiet_1_3', 'quiet_gt3', 'loud_1_3', 'loud_gt3', 'peak', 'peak_and_level', 'calm', 'flash', 'rms', 'flash_and_rms', 'complete', 'mid_word', 'mid_sentence', 'timeout', 'budget', 'no_audio', 'no_detector', 'no_words', 'unreadable', 'error'],
+    qa_avsync: ['pass', 'fail', 'skip'], qa_face: ['pass', 'fail', 'skip'], qa_loudness: ['pass', 'fail', 'skip'], qa_jitter: ['pass', 'fail', 'skip'], qa_ending: ['pass', 'fail', 'skip'],
+    qa_mode: ['shadow'],
+    failure_stage: ['screening', 'dispatch', 'production', 'ingest', 'subtitle', 'analyze', 'vision', 'render', 'outline', 'timeline', 'scoring', 'title', 'clustering', 'other'],
+    route: ['subtitle', 'visual'],
+    provider: ['dashscope', 'openai', 'gemini', 'deepseek', 'seed', 'kimi', 'glm', 'grok', 'infistar', 'api88', 'compatible', 'ollama', 'lmstudio', 'other', 'whisper_local', 'sensevoice_local', 'cloud'],
+    upstream_error_type: ['invalid_key', 'insufficient_quota', 'permission_denied', 'model_not_found', 'bad_endpoint', 'rate_limited', 'upstream_unavailable', 'timeout', 'connection', 'output_truncated', 'unknown'],
+    code: ['whisper_installed', 'whisper_installing', 'whisper_install_failed', 'whisper_not_installed', 'whisper_model_downloading', 'whisper_model_failed', 'whisper_model_missing', 'sensevoice_ready', 'sensevoice_not_ready', 'cloud_configured', 'cloud_not_configured'],
+  }
+  for (const [key, allowed] of Object.entries(enums)) {
+    if (typeof input[key] === 'string' && allowed.includes(input[key] as string)) out[key] = input[key] as string
+  }
+  for (const key of ['outro_applied', 'brand_outro_enabled', 'reused_content_profile', 'has_crop_track', 'has_manual_adjustment', 'auto_frame_retained', 'tags_enabled', 'packaging_fallback', 'burned_captions', 'subtitle_enabled', 'has_subtitle', 'blocked', 'goal_content', 'goal_highlight', 'goal_promo', 'allow_visual_screening', 'scheduled', 'is_recommended', 'accepted_recommendation', ...['requested', 'succeeded', 'failed'].flatMap(p => ['content', 'highlight', 'promo'].map(g => `${p}_${g}`))]) {
+    if (typeof input[key] === 'boolean') out[key] = input[key] as boolean
+  }
+  if (typeof input.downgraded === 'boolean') out.downgraded = input.downgraded
+  for (const key of ['warning_count', 'outro_applied_count', 'outro_fallback_count', 'outro_unknown_count', 'full_frame_count', 'framing_pending_count', 'framing_captions_count', 'example_version', 'framed_count', 'scene_count', 'fit_count', 'duration_ms', 'request_duration_ms', 'latency_ms', 'first_frame_ms', 'variant_count', 'completed_variant_count', 'failed_variant_count', 'skipped_variant_count', 'on_demand_variant_count', 'interview_count', 'podcast_count', 'landscape_count', 'editorial_count', 'street_count', 'classic_count', 'html_downgrade_count', 'speaker_framed_count', 'packaging_fallback_count', 'trimmed_count', 'platform_count', 'result_count', 'requested_count', 'succeeded_count', 'failed_count', 'cpu_count', 'retry_count', 'billable_calls_before_failure', 'prompt_tokens', 'completion_tokens', 'reasoning_tokens', 'llm_calls']) {
+    if (typeof input[key] === 'number' && Number.isFinite(input[key]) && (input[key] as number) >= 0) out[key] = input[key] as number
+  }
+  for (const prefix of ['requested', 'succeeded', 'failed']) {
+    const goals = input[`${prefix}_goals`]
+    if (Array.isArray(goals)) {
+      const valid = ['content', 'highlight', 'promo'].filter(g => goals.includes(g))
+      out[`${prefix}_count`] = valid.length
+      for (const goal of ['content', 'highlight', 'promo']) out[`${prefix}_${goal}`] = valid.includes(goal)
+    }
+  }
+  if (typeof input.http_status === 'number' && Number.isInteger(input.http_status) && input.http_status >= 400 && input.http_status <= 599) out.http_status = input.http_status
+  if (typeof input.error_code === 'string' && /^(http_[45][0-9]{2}|network|timeout|unknown|validation|missing_resource|unexpected|connection|authentication|rate_limited|provider_error|invalid_response|output_truncated|refused|multiple|llm_not_configured|whisper_not_installed|whisper_install_failed|transcription_empty|subtitle_setup|timeline_empty|source_blocked|source_too_short|source_no_audio|source_unreadable|service_restarted)$/.test(input.error_code)) out.error_code = input.error_code
+  if (typeof input.model === 'string' && /^[\w.\-:/]{1,64}$/.test(input.model) && !input.model.toLowerCase().includes('sk-') && !input.model.includes('://')) out.model = input.model
+  if (typeof input.base_url_host === 'string' && (input.base_url_host === 'local' || /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)$/.test(input.base_url_host))) out.base_url_host = input.base_url_host
+  for (const key of ['flow_id', 'operation_id', 'artifact_id', 'attempt_id']) {
+    if (typeof input[key] === 'string' && /^t-[a-z0-9-]{10,100}$/.test(input[key] as string)) out[key] = input[key] as string
+  }
+  return out
+}
 
 export function errorCode(error: unknown): string {
   const e = error as { code?: string; response?: { status?: number } } | undefined
-  if (e?.response?.status) return `http_${e.response.status}`
+  const status = e?.response?.status
+  if (typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599) return `http_${status}`
   if (e?.code === 'ECONNABORTED' || e?.code === 'ETIMEDOUT') return 'timeout'
   if (e?.code === 'ERR_NETWORK') return 'network'
   return 'unknown'
@@ -21,9 +109,15 @@ export function utcMillis(value?: string | null): number | undefined {
 
 export function routeName(path: string): string {
   const p = path.split(/[?#]/)[0]
+  if (/^\/project\/[^/]+\/publish(?:\/[^/]+)?\/?$/.test(p)) return '/project/:id/publish/:clipId'
+  if (/^\/import\/[^/]+\/?$/.test(p)) return '/import/:id'
+  if (/^\/project\/[^/]+\/studio\/[^/]+\/?$/.test(p)) return '/project/:id/studio/:draftId'
   if (/^\/project\/[^/]+\/?$/.test(p)) return '/project/:id'
   return ['/', '/settings'].includes(p) ? p : '/other'
 }
+
+export interface StudioQaCheck { checker?: string; outcome?: string; bucket?: string; duration_ms?: number }
+export interface StudioQa { mode?: string; checks?: StudioQaCheck[] }
 
 export interface TaskSnapshot {
   id: string; task_type: string; status: string; created_at: string
@@ -31,15 +125,70 @@ export interface TaskSnapshot {
 }
 
 export interface StudioSnapshot {
-  plan?: { id: string; mode?: string }
-  analysis?: { status: string } | null
-  jobs?: { job_id: string; status: string }[]
+  material_origin?: 'sample' | 'user' | 'unknown'
+  example_version?: number
+  analysis_history?: { run_id: string; plan?: StudioSnapshot['plan']; analysis: StudioSnapshot['analysis'] }[]
+  plan?: { id: string; mode?: string; confirmed_analysis?: string; recommended_analysis?: string; local_evidence?: { subtitle_status?: string } }
+  analysis?: { run_id?: string; phase?: string; status: string; outcome?: string; duration_ms?: number; error_code?: string; failure_stage?: string; http_status?: number; provider?: string; model?: string; base_url_host?: string; upstream_error_type?: string; billable_calls_before_failure?: number; retry_count?: number; llm_calls?: number; prompt_tokens?: number; completion_tokens?: number; requested_goals?: string[]; succeeded_goals?: string[]; failed_goals?: string[]; result_count?: number } | null
+  jobs?: { job_id: string; status: string; duration_ms?: number; error_code?: string; brand_outro?: boolean; result?: { outro_applied?: boolean; warnings?: string[]; template_render?: { template?: string; requested_template?: string; downgraded?: boolean; downgrade_reason?: string; encoder?: string; duration_ms?: number; failure_reason?: string; outcome?: string; os?: string; cpu_count?: number } }; qa?: StudioQa | null }[]
+  generation?: { auto_start?: boolean; status?: string; error_code?: string; failure_stage?: string; http_status?: number; provider?: string; model?: string; base_url_host?: string; upstream_error_type?: string; billable_calls_before_failure?: number; retry_count?: number; llm_calls?: number; prompt_tokens?: number; completion_tokens?: number; route?: string; portrait_style?: string; branding?: { outro_enabled?: boolean }; requested_platforms?: string[]; completed_variant_count?: number; skipped?: unknown[]; source_has_burned_subtitles?: boolean; created_at?: string; finished_at?: string; recommended_template?: string; accepted_recommendation?: boolean } | null
+  output_variants?: { id?: string; draft_id: string; render_job_id?: string; strategy_id: string; status: string; framing?: string; branding?: { outro_enabled?: boolean }; trimmed_to_sec?: number; cover_job?: { job_id: string; status: string } | null; qa?: StudioQa | null }[]
+  drafts?: { id: string; packaging?: { template?: string; fallback?: boolean } | null }[]
+}
+
+/** Aggregate counts for one automatic generation; no titles, captions, names or IDs. */
+export function generationSummary(snapshot: StudioSnapshot): Record<string, unknown> {
+  const all = snapshot.output_variants || []
+  // Backup clips are not packaged until someone asks for them: template counts cover produced versions.
+  const variants = all.filter(v => v.status !== 'on_demand')
+  const templates = new Map((snapshot.drafts || []).map(d => [d.id, d.packaging] as const))
+  const packaged = variants.map(v => templates.get(v.draft_id)).filter(Boolean)
+  const count = (test: (v: (typeof variants)[number]) => boolean) => variants.filter(test).length
+  const jobs = new Map((snapshot.jobs || []).map(j => [j.job_id, j]))
+  const completed = variants.filter(v => v.status === 'completed').map(v => ({ variant: v, job: jobs.get(v.render_job_id || '') }))
+  const created = utcMillis(snapshot.generation?.created_at), finished = utcMillis(snapshot.generation?.finished_at)
+  return {
+    variant_count: all.length,
+    completed_variant_count: count(v => v.status === 'completed'),
+    failed_variant_count: count(v => v.status === 'failed'),
+    on_demand_variant_count: all.length - variants.length,
+    skipped_variant_count: Array.isArray(snapshot.generation?.skipped) ? snapshot.generation!.skipped!.length : 0,
+    platform_count: snapshot.generation?.requested_platforms?.length || 0,
+    interview_count: packaged.filter(p => p?.template === 'interview_zh').length,
+    podcast_count: packaged.filter(p => p?.template === 'podcast_en').length,
+    landscape_count: variants.length - packaged.length,
+    editorial_count: variants.filter(v => jobs.get(v.render_job_id || '')?.result?.template_render?.template === 'editorial' && jobs.get(v.render_job_id || '')?.result?.template_render?.downgraded !== true).length,
+    street_count: variants.filter(v => jobs.get(v.render_job_id || '')?.result?.template_render?.template === 'street' && jobs.get(v.render_job_id || '')?.result?.template_render?.downgraded !== true).length,
+    classic_count: variants.filter(v => {
+      const report = jobs.get(v.render_job_id || '')?.result?.template_render
+      if (report) return report.downgraded === true || report.template === 'classic'
+      const packaging = templates.get(v.draft_id)
+      return packaging?.template === 'interview_zh' || packaging?.template === 'podcast_en'
+    }).length,
+    html_downgrade_count: variants.filter(v => jobs.get(v.render_job_id || '')?.result?.template_render?.downgraded === true).length,
+    speaker_framed_count: count(v => v.framing === 'speaker'),
+    full_frame_count: count(v => v.framing === 'full_frame'),
+    framing_pending_count: count(v => v.framing === 'full_frame_pending'),
+    framing_captions_count: count(v => v.framing === 'full_frame_captions'),
+    portrait_style: snapshot.generation?.portrait_style,
+    brand_outro_enabled: snapshot.generation?.branding?.outro_enabled,
+    outro_applied_count: completed.filter(({ job }) => job?.result?.outro_applied === true).length,
+    outro_fallback_count: completed.filter(({ variant, job }) => (job?.brand_outro ?? variant.branding?.outro_enabled) === true && job?.result?.outro_applied === false).length,
+    outro_unknown_count: completed.filter(({ job }) => typeof job?.result?.outro_applied !== 'boolean').length,
+    packaging_fallback_count: packaged.filter(p => p?.fallback).length,
+    trimmed_count: count(v => !!v.trimmed_to_sec),
+    burned_captions: !!snapshot.generation?.source_has_burned_subtitles,
+    ...(snapshot.generation?.recommended_template ? { recommended_template: snapshot.generation.recommended_template } : {}),
+    ...(typeof snapshot.generation?.accepted_recommendation === 'boolean' ? { accepted_recommendation: snapshot.generation.accepted_recommendation } : {}),
+    duration_ms: created !== undefined && finished !== undefined ? Math.max(0, finished - created) : undefined,
+  }
 }
 
 /** Storage and capture are injected so offline/privacy/replay behavior is testable. */
 export class WorkflowTracker {
   private watches: Watch[] = []
   private epoch = 0
+  private contexts: Record<string, Context> = {}
   constructor(
     private storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>,
     private enabled: () => boolean,
@@ -49,12 +198,46 @@ export class WorkflowTracker {
     try {
       const raw: unknown = JSON.parse(storage.getItem(WORKFLOW_KEY) || '[]')
       if (Array.isArray(raw)) this.watches = raw.filter((w): w is Watch =>
-        w && ['project', 'export', 'bilibili', 'youtube', 'studio-screen', 'studio-production', 'studio-export'].includes(w.kind) &&
+        w && ['project', 'export', 'bilibili', 'youtube', 'studio-screen', 'studio-production', 'studio-export', 'studio-generation', 'studio-cover', 'studio-variant', 'framing-runtime'].includes(w.kind) &&
         typeof w.id === 'string' && Number.isFinite(w.since) && Array.isArray(w.seen) &&
         w.seen.every((v: unknown) => typeof v === 'string') && w.seen.length <= 2000 &&
-        (w.projectId === undefined || typeof w.projectId === 'string'))
+        (w.projectId === undefined || typeof w.projectId === 'string') &&
+        (w.runId === undefined || typeof w.runId === 'string'))
     } catch { /* corrupted/unavailable storage cannot block the application */ }
+    try {
+      const raw = JSON.parse(storage.getItem(CONTEXT_KEY) || '{}')
+      for (const [key, value] of Object.entries(raw).slice(-500)) {
+        const c = value as Context
+        if (c && Number.isFinite(c.updated) && c.updated > this.now() - 35 * 86400000) {
+          this.contexts[key] = { props: safeStudioProperties(c.props), updated: c.updated, artifacts: Object.fromEntries(Object.entries(c.artifacts || {}).filter(([,v]) => typeof v === 'string' && /^t-[a-z0-9-]{10,100}$/.test(v)).slice(-100)) }
+        }
+      }
+    } catch { /* unavailable storage */ }
+    if (!this.enabled()) this.clear()
     this.prune()
+  }
+  private persistContexts(): void {
+    const entries = Object.entries(this.contexts).filter(([,c]) => c.updated > this.now() - 35 * 86400000).sort((a,b) => a[1].updated - b[1].updated).slice(-500)
+    this.contexts = Object.fromEntries(entries)
+    try { this.storage.setItem(CONTEXT_KEY, JSON.stringify(this.contexts)) } catch { /* best effort */ }
+  }
+  rememberProject(id: string, input: Record<string, unknown>): void {
+    if (!this.enabled() || !id) return
+    const before = this.contexts[id]
+    const props = safeStudioProperties(input)
+    this.contexts[id] = { props: { ...before?.props, ...props, flow_id: before?.props.flow_id || props.flow_id || telemetryId() }, updated: this.now(), artifacts: before?.artifacts || {} }
+    this.persistContexts()
+  }
+  context(id?: string, artifact?: string): Properties {
+    if (!this.enabled() || !id) return { material_origin: 'unknown' }
+    if (!this.contexts[id]) this.rememberProject(id, { material_origin: 'unknown' })
+    const c = this.contexts[id]
+    if (artifact && !c.artifacts[artifact]) {
+      c.artifacts[artifact] = telemetryId()
+      c.artifacts = Object.fromEntries(Object.entries(c.artifacts).slice(-100))
+      this.persistContexts()
+    }
+    return { flow_id: c.props.flow_id, material_origin: c.props.material_origin || 'unknown', ...(c.props.example_version !== undefined ? { example_version: c.props.example_version } : {}), ...(artifact ? { artifact_id: c.artifacts[artifact] } : {}) }
   }
   private prune(): void {
     this.watches = this.watches.filter(w => w.since > this.now() - TTL && w.since <= this.now()).slice(-LIMIT)
@@ -65,6 +248,8 @@ export class WorkflowTracker {
   clear(): void {
     this.epoch++
     this.watches = []
+    this.contexts = {}
+    try { this.storage.removeItem(CONTEXT_KEY) } catch { /* best effort */ }
     try { this.storage.removeItem(WORKFLOW_KEY) } catch { /* best effort */ }
   }
   generation(): number { return this.epoch }
@@ -74,42 +259,98 @@ export class WorkflowTracker {
     this.prune()
     return [...this.watches]
   }
-  watch(kind: Watch['kind'], id: string, projectId?: string, since = this.now()): void {
+  watch(kind: Watch['kind'], id: string, projectId?: string, since = this.now(), properties: Properties = {}, restart = false, runId?: string): void {
     if (!this.enabled() || !id) return
     this.prune()
-    const existing = this.watches.find(w => w.kind === kind && w.id === id)
-    if (existing && !existing.settled) return
+    const existing = this.watches.find(w => w.kind === kind && w.id === id && (!runId || w.runId === runId))
+    if (existing && (!existing.settled || kind === 'studio-export') && !restart) return
     if (existing) this.watches = this.watches.filter(w => w !== existing)
-    this.watches.push({ kind, id, projectId, since, seen: [] })
+    this.watches.push({ kind, id, runId, projectId, since, seen: [], properties: safeStudioProperties({ ...this.context(projectId || id), ...properties }), token: telemetryId() })
     this.prune()
     this.persist()
   }
   emitOnce(w: Watch, key: string, event: string, properties: Properties): void {
     if (!this.enabled() || !this.watches.includes(w) || w.seen.includes(key) || w.seen.length >= 2000) return
-    if (this.capture(event, w.kind.startsWith('studio-') ? { outcome: properties.outcome } : { ...properties, $insert_id: `autoclip-v2:${w.kind}:${w.id}:${key}` })) {
+    if (this.capture(event, (w.kind.startsWith('studio-') || w.kind === 'framing-runtime') ? { ...safeStudioProperties(w.properties), ...safeStudioProperties(properties), ...safeStudioProperties({ attempt_id: w.token }), ...(w.token && /^[a-z0-9-]{10,100}$/.test(w.token) ? { $insert_id: `studio-v1:${w.token}:${key}` } : {}) } : { ...this.context(w.projectId || w.id), ...properties, $insert_id: `autoclip-v2:${w.kind}:${w.id}:${key}` })) {
       w.seen.push(key)
       this.persist()
     }
   }
-  /** IDs remain in local watches only; external payload is a fixed outcome enum. */
+  observeCoverJob(w: Watch, job?: { job_id: string; status: string } | null): void {
+    if (w.kind !== 'studio-cover' || w.settled || job?.job_id !== w.id || !['completed', 'failed'].includes(job.status)) return
+    this.emitOnce(w, 'finished', 'studio_cover_redesign_finished', safeStudioProperties({ ...this.context(w.projectId), outcome: job.status }))
+    if (w.seen.includes('finished')) { w.settled = true; this.persist() }
+  }
+  /** IDs remain in local watches only; external payload follows the versioned aggregate contract. */
   observeStudio(w: Watch, snapshot: StudioSnapshot): void {
     if (w.settled) return
+    const original = snapshot
+    if (w.runId && w.kind !== 'studio-variant') {
+      const receipt = snapshot.analysis_history?.find(r => r.run_id === w.runId)
+      if (receipt) snapshot = { ...snapshot, plan: receipt.plan, analysis: receipt.analysis }
+      else if (snapshot.analysis?.run_id !== w.runId && w.kind !== 'studio-export') return
+    }
+    const context = this.context(w.projectId || w.id)
+    if (original.material_origin) this.rememberProject(w.projectId || w.id, { ...context, material_origin: original.material_origin, example_version: original.example_version })
     let event: string | undefined
     let outcome: string | undefined
-    if (w.kind === 'studio-export') {
+    let details: Record<string, unknown> = {}
+    if (w.kind === 'studio-cover') {
+      const job = snapshot.output_variants?.find(v => v.cover_job?.job_id === w.id)?.cover_job
+      this.observeCoverJob(w, job)
+      return
+    } else if (w.kind === 'studio-variant') {
+      const variant = snapshot.output_variants?.find(v => v.id === w.id && (!w.runId || v.render_job_id === w.runId))
+      const job = snapshot.jobs?.find(j => j.job_id === variant?.render_job_id)
+      if (variant && ['completed', 'failed'].includes(variant.status)) {
+        event = 'studio_variant_finished'; outcome = variant.status
+        details = { strategy_id: variant.strategy_id, framing: variant.framing, error_code: job?.error_code, outro_applied: job?.result?.outro_applied, warning_count: job?.result?.warnings?.length }
+        const report = job?.result?.template_render
+        if (report) this.emitOnce(w, 'template', 'studio_template_render_finished', safeStudioProperties({ ...this.context(w.projectId || w.id), ...report, strategy_id: variant.strategy_id }))
+      }
+    } else if (w.kind === 'studio-export') {
       const job = snapshot.jobs?.find(j => j.job_id === w.id)
       if (job && ['completed', 'failed'].includes(job.status)) {
-        event = 'studio_export_finished'; outcome = job.status
+        event = 'studio_export_finished'; outcome = job.status; details = { duration_ms: job.duration_ms, error_code: job.error_code, outro_applied: job.result?.outro_applied, warning_count: job.result?.warnings?.length }
       }
     } else if (w.kind === 'studio-screen') {
-      if (snapshot.plan?.id) { event = 'studio_screen_finished'; outcome = snapshot.plan.mode === 'ai' ? 'recommended' : 'manual_fallback' }
-      else if (snapshot.analysis?.status === 'failed') { event = 'studio_screen_finished'; outcome = 'failed' }
+      details = { duration_ms: snapshot.analysis?.duration_ms, error_code: snapshot.analysis?.error_code, failure_stage: snapshot.analysis?.failure_stage }
+      const automatic = !!snapshot.generation?.auto_start && ['production', 'rendering'].includes(snapshot.analysis?.phase || '')
+      if (automatic) {
+        // Automatic output skips confirmation: screening ended once production started, whatever came after.
+        event = 'studio_screen_finished'; outcome = 'auto_started'
+        details = { ...details, duration_ms: undefined, error_code: undefined, failure_stage: undefined, recommendation_mode: snapshot.plan?.mode, analysis_mode: snapshot.plan?.recommended_analysis, subtitle_status: snapshot.plan?.local_evidence?.subtitle_status }
+      } else if (snapshot.analysis?.status === 'failed' && snapshot.analysis?.phase !== 'production') { event = 'studio_screen_finished'; outcome = 'failed' }
+      else if (snapshot.analysis?.status === 'awaiting_confirmation' && snapshot.plan?.id) {
+        event = 'studio_screen_finished'
+        outcome = ['ai', 'local'].includes(snapshot.plan.mode || '') ? 'recommended' : snapshot.plan.mode
+        details = { ...details, recommendation_mode: snapshot.plan.mode, analysis_mode: snapshot.plan.recommended_analysis, subtitle_status: snapshot.plan.local_evidence?.subtitle_status }
+      }
+    } else if (w.kind === 'studio-generation') {
+      if (!['completed', 'partial', 'failed'].includes(snapshot.generation?.status || '')) return
+
+      event = 'studio_generation_finished'; outcome = snapshot.generation!.status
+      const unfinished = ['failed', 'partial'].includes(outcome || '')
+      const run = snapshot.generation, analysis = snapshot.analysis
+      details = { ...generationSummary(snapshot), error_code: unfinished ? run?.error_code || analysis?.error_code : undefined,
+        failure_stage: unfinished ? run?.failure_stage || analysis?.failure_stage : undefined,
+        http_status: unfinished ? run?.http_status ?? analysis?.http_status : undefined,
+        provider: run?.provider || analysis?.provider, model: run?.model || analysis?.model,
+        base_url_host: run?.base_url_host || analysis?.base_url_host,
+        upstream_error_type: unfinished ? run?.upstream_error_type || analysis?.upstream_error_type : undefined,
+        billable_calls_before_failure: unfinished ? run?.billable_calls_before_failure ?? analysis?.billable_calls_before_failure : undefined,
+        retry_count: run?.retry_count ?? analysis?.retry_count,
+        llm_calls: run?.llm_calls ?? analysis?.llm_calls,
+        prompt_tokens: run?.prompt_tokens ?? analysis?.prompt_tokens,
+        completion_tokens: run?.completion_tokens ?? analysis?.completion_tokens,
+        route: run?.route || snapshot.plan?.recommended_analysis, recommendation_mode: snapshot.plan?.mode }
     } else if (w.kind === 'studio-production' && snapshot.plan?.id === w.id &&
                ['completed', 'failed'].includes(snapshot.analysis?.status || '')) {
-      event = 'studio_production_finished'; outcome = snapshot.analysis!.status
+      event = 'studio_production_finished'; outcome = snapshot.analysis!.outcome || snapshot.analysis!.status
+      details = { ...snapshot.analysis, analysis_mode: snapshot.plan.confirmed_analysis }
     }
     if (event) {
-      this.emitOnce(w, 'finished', event, { outcome })
+      this.emitOnce(w, 'finished', event, safeStudioProperties({ ...this.context(w.projectId || w.id), ...details, outcome }))
       if (w.seen.includes('finished')) { w.settled = true; this.persist() }
     }
   }

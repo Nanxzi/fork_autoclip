@@ -1,18 +1,22 @@
 """Unified creative workspace. Legacy projects are adapted, never overwritten."""
+import json
 import uuid
 from pathlib import Path
 from typing import Optional, Literal
 from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query
 from fastapi.responses import FileResponse, Response
+from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
 from backend.core.database import get_db
+from backend.core.sentry_setup import capture_studio_exception
 from backend.models.project import Project
 from backend.models.clip import Clip
 from backend.schemas.project import ProjectCreate, ProjectType
 from backend.services.project_service import ProjectService
+from backend.services.platform_strategy import list_platform_strategies
 from backend.services.studio import store, jobs, intelligence
-from backend.services.studio.models import Draft, CreateDraft, DuplicateDraft, ExportDraftRequest, RewriteRequest, Preferences, Language, Scene, ImportOptions, ConfirmPlan
+from backend.services.studio.models import Draft, CreateDraft, DuplicateDraft, ExportDraftRequest, RewriteRequest, Preferences, Language, Scene, ImportOptions, ConfirmPlan, AppendPlatformsRequest, PostCopy
 
 router = APIRouter()
 
@@ -43,9 +47,22 @@ def title_preset_thumbnail(style: Literal['comic', 'neon', 'arena', 'editorial',
     from backend.services.studio.title_art import thumbnail
     return Response(call(thumbnail, style, v), media_type='image/png', headers={'Cache-Control':'public, max-age=86400'})
 
+@router.get('/readiness')
+def import_readiness():
+    from backend.services.studio import readiness
+    return readiness.report()
+
+
 @router.get('/capabilities')
 def capabilities():
     return {'visual_analysis': intelligence.ready(), 'visual_model': intelligence.visual_config()[2], 'languages': ['source', 'zh', 'en', 'ja']}
+
+
+@router.get('/platform-strategies')
+def platform_strategies():
+    """Public output targets for the quick-generation entry point."""
+    return {'strategies': list_platform_strategies()}
+
 
 from backend.services.studio import vision_settings, analysis_preferences
 
@@ -70,7 +87,8 @@ def save_vision_settings(body: vision_settings.VisionSettingsInput):
 def test_vision_settings(body: vision_settings.VisionSettingsInput):
     try:
         return vision_settings.test(body)
-    except Exception:
+    except Exception as error:
+        capture_studio_exception(error, 'vision_test', analysis_mode='visual')
         raise HTTPException(502, '视觉连接测试失败，请检查接口地址、密钥和模型是否支持图片输入') from None
 
 @router.post('/import')
@@ -80,11 +98,18 @@ async def import_visual(
     aspect: Optional[Literal['original', 'portrait', 'landscape']] = Form(None),
     duration: Optional[int] = Form(None, ge=10, le=120),
     instruction: str = Form('', max_length=1000),
+    platforms: list[str] = Form(['douyin']),
+    auto_start: bool = Form(False),
+    portrait_style: Literal['auto', 'interview', 'podcast'] = Form('auto'),
+    html_template: Optional[Literal['editorial', 'street', 'classic']] = Form(None),
+    recommended_template: Optional[Literal['editorial', 'street', 'classic']] = Form(None),
+    brand_outro_enabled: bool = Form(True),
     subtitle: Optional[UploadFile] = File(None),
     name: str = Form('智能剪辑', max_length=200),
     url: Optional[str] = Form(None),
     browser: Optional[Literal['chrome', 'edge', 'firefox', 'safari']] = Form(None),
     video: Optional[UploadFile] = File(None),
+    features: str = Form(''),
     db: Session = Depends(get_db),
 ):
     if bool(url) == bool(video):
@@ -111,8 +136,13 @@ async def import_visual(
                 raise HTTPException(422, '字幕文件为空或超过 2 MB')
         finally:
             await subtitle.close()
-    prefs = ImportOptions(goal=goal, language=language, aspect=aspect, duration=duration, instruction=instruction)
-    project = ProjectService(db).create_project(ProjectCreate(name=name.strip() or '智能剪辑', project_type=ProjectType.DEFAULT, source_url=url, settings={'creative': {'goal': goal}, 'smart_import': prefs.model_dump(), 'import_staging': True, 'creative_browser': browser}))
+    prefs = ImportOptions(
+        goal=goal, language=language, aspect=aspect, duration=duration, instruction=instruction,
+        platforms=platforms, auto_start=auto_start, portrait_style=portrait_style, html_template=html_template,
+        recommended_template=recommended_template,
+        branding={'outro_enabled': brand_outro_enabled},
+    )
+    project = ProjectService(db).create_project(ProjectCreate(name=name.strip() or '智能剪辑', project_type=ProjectType.DEFAULT, source_url=url, settings={'creative': {'goal': goal}, 'smart_import': prefs.model_dump(), 'import_staging': not prefs.auto_start, 'creative_browser': browser, 'platforms': prefs.platforms, 'brand_outro_enabled': prefs.branding.outro_enabled}))
     pid = str(project.id)
     raw = store.directory(pid) / 'raw'
     raw.mkdir(parents=True, exist_ok=True)
@@ -127,7 +157,15 @@ async def import_visual(
                     target.write(chunk)
             project.video_path = str(path)
             db.commit()
-        call(jobs.inspect_project, pid, prefs, url, browser)
+        snapshot = None
+        if features and len(features) <= 4000:
+            try:
+                parsed = json.loads(features)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                snapshot = parsed
+        run_id = call(jobs.inspect_project, pid, prefs, url, browser, features=snapshot)
     except Exception:
         project.status = 'failed'
         db.commit()
@@ -135,13 +173,55 @@ async def import_visual(
     finally:
         if video:
             await video.close()
-    return {'project_id': pid}
+    return {'project_id': pid, 'analysis_run_id': run_id}
+
+
+@router.post('/template-recommend')
+async def template_recommend(
+    url: Optional[str] = Form(None),
+    header: Optional[UploadFile] = File(None),
+):
+    """Recommend an editing style from a link or a file header. No download."""
+    if url:
+        parsed = urlparse(url)
+        host = (parsed.hostname or '').lower()
+        if parsed.scheme != 'https' or parsed.username or parsed.password or not any(host == domain or host.endswith('.' + domain) for domain in ('youtube.com', 'youtu.be', 'bilibili.com', 'b23.tv')):
+            raise HTTPException(422, '仅支持 HTTPS 的 B 站或 YouTube 视频链接')
+    blob = None
+    if header is not None:
+        try:
+            blob = await header.read(1024 * 1024)
+        finally:
+            await header.close()
+    if not url and not blob:
+        raise HTTPException(422, '请提供一个视频链接或文件')
+    from backend.services.studio.template_recommend import recommend_template
+    return recommend_template(url=url, header=blob)
+
 
 @router.get('/{project_id}')
 def workspace(project_id: str, db: Session = Depends(get_db)):
-    project_or_404(project_id, db)
+    project = project_or_404(project_id, db)
     data = call(store.read, project_id)
-    return {**data, 'jobs': [{k: v for k, v in j.items() if k not in ('instance', 'snapshot')} for j in data['jobs']]}
+    return {**data, 'material_origin': 'sample' if (project.processing_config or {}).get('example') else 'user', 'example_version': (project.processing_config or {}).get('example_version'), 'jobs': [{k: v for k, v in j.items() if k not in ('instance', 'snapshot')} for j in data['jobs']]}
+
+@router.get('/{project_id}/source-preview')
+def source_preview_status(project_id: str, db: Session = Depends(get_db)):
+    project_or_404(project_id, db)
+    from backend.services.studio import preview
+    return call(preview.status, project_id)
+
+@router.post('/{project_id}/source-preview')
+def prepare_source_preview(project_id: str, db: Session = Depends(get_db)):
+    project_or_404(project_id, db)
+    from backend.services.studio import preview
+    return call(preview.start, project_id)
+
+@router.get('/{project_id}/source-preview/video')
+def source_preview_video(project_id: str, db: Session = Depends(get_db)):
+    project_or_404(project_id, db)
+    from backend.services.studio import preview
+    return FileResponse(call(preview.ready_file, project_id), media_type='video/mp4')
 
 @router.get('/{project_id}/source')
 def source_video(project_id: str, db: Session = Depends(get_db)):
@@ -213,8 +293,8 @@ def analyze_again(project_id: str, db: Session = Depends(get_db)):
         url = (project.project_metadata or {}).get('source_url')
         if not url:
             raise HTTPException(404, '原素材不存在，请重新导入')
-    call(jobs.inspect_project, project_id, prefs, url, (project.processing_config or {}).get('creative_browser'))
-    return {'ok': True}
+    run_id = call(jobs.inspect_project, project_id, prefs, url, (project.processing_config or {}).get('creative_browser'))
+    return {'ok': True, 'analysis_run_id': run_id}
 
 @router.put('/{project_id}/plan')
 def correct_plan(project_id: str, body: ImportOptions, db: Session = Depends(get_db)):
@@ -230,16 +310,112 @@ def correct_plan(project_id: str, body: ImportOptions, db: Session = Depends(get
             url = (project.project_metadata or {}).get('source_url')
             if not url:
                 raise HTTPException(404, '原素材不存在，请重新导入')
-        project.processing_config = {**(project.processing_config or {}), 'smart_import': body.model_dump()}
+        previous_config = dict(project.processing_config or {})
+        project.processing_config = {**previous_config, 'smart_import': body.model_dump()}
         db.commit()
-        call(jobs.inspect_project, project_id, body, url, (project.processing_config or {}).get('creative_browser'))
-    return {'ok': True}
+        try:
+            run_id = call(jobs.inspect_project, project_id, body, url, previous_config.get('creative_browser'))
+        except Exception:
+            # A rejected submission must not persist preferences for a plan
+            # that was never produced. inspect_project restores the JSON state.
+            project.processing_config = previous_config
+            db.commit()
+            raise
+    return {'ok': True, 'analysis_run_id': run_id}
 
 @router.post('/{project_id}/start')
 def confirm_and_start(project_id: str, body: ConfirmPlan, db: Session = Depends(get_db)):
     project_or_404(project_id, db)
-    call(jobs.confirm_project, project_id, body)
-    return {'ok': True}
+    run_id = call(jobs.confirm_project, project_id, body)
+    return {'ok': True, 'analysis_run_id': run_id}
+
+@router.post('/{project_id}/platforms')
+def append_platforms(project_id: str, body: AppendPlatformsRequest, db: Session = Depends(get_db)):
+    project_or_404(project_id, db)
+    variants = call(jobs.append_platform_variants, project_id, body.platforms, body.branding.model_dump())
+    return {'variants': variants}
+
+
+def _variant_job(project_id: str, variant_id: str):
+    state = call(store.read, project_id)
+    variant = next((item for item in state.get('output_variants', []) if item['id'] == variant_id), None)
+    if not variant:
+        raise HTTPException(404, '成片版本不存在')
+    job = next((j for j in state['jobs'] if j['job_id'] == variant.get('render_job_id')), None)
+    if not job or job['status'] != 'completed':
+        raise HTTPException(409, '成片尚未生成')
+    return variant, job
+
+
+@router.get('/{project_id}/output-variants/{variant_id}/cover')
+def output_variant_cover(project_id: str, variant_id: str, db: Session = Depends(get_db)):
+    from backend.services.studio import publish_kit
+    project_or_404(project_id, db)
+    variant, job = _variant_job(project_id, variant_id)
+    path, _ = publish_kit.cover_file(project_id, job['job_id'], variant['strategy_id'])
+    if path is None:
+        raise HTTPException(404, '封面尚未生成')
+    return FileResponse(path, media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/{project_id}/output-variants/{variant_id}/cover/ai')
+def redesign_output_variant_cover(project_id: str, variant_id: str, db: Session = Depends(get_db)):
+    from backend.services import cover
+    project_or_404(project_id, db)
+    _variant_job(project_id, variant_id)
+    cfg = cover.load_config()
+    if not (cfg.enabled and cfg.configured):
+        raise HTTPException(409, '请先在设置里开启 AI 封面并选择图像模型')
+    if not cfg.allow_send_frame:
+        raise HTTPException(409, '请先在设置里允许发送参考帧')
+    job = call(jobs.request_ai_cover, project_id, variant_id)
+    if job is None:
+        raise HTTPException(409, '请先检查 AI 封面设置')
+    return job
+
+
+@router.get('/{project_id}/output-variants/{variant_id}/cover/ai')
+def output_variant_cover_job(project_id: str, variant_id: str, db: Session = Depends(get_db)):
+    project_or_404(project_id, db)
+    _variant_job(project_id, variant_id)
+    return call(jobs.ai_cover_status, project_id, variant_id)
+
+
+@router.put('/{project_id}/output-variants/{variant_id}/post')
+def update_output_variant_post(project_id: str, variant_id: str, body: PostCopy, db: Session = Depends(get_db)):
+    project_or_404(project_id, db)
+    return call(jobs.update_post, project_id, variant_id, body)
+
+
+@router.get('/{project_id}/output-variants/{variant_id}/kit')
+def output_variant_kit(project_id: str, variant_id: str, db: Session = Depends(get_db)):
+    from urllib.parse import quote
+    from backend.services.platform_strategy import platform_strategy
+    from backend.services.studio import publish_kit
+    project_or_404(project_id, db)
+    variant, job = _variant_job(project_id, variant_id)
+    video = store.directory(project_id) / 'output' / 'studio' / f"{job['job_id']}.mp4"
+    if not video.is_file():
+        raise HTTPException(404, '成片文件已移除')
+    cover, _ = publish_kit.cover_file(project_id, job['job_id'], variant['strategy_id'])
+    post = variant.get('post') or {'title': (job.get('result') or {}).get('title', '')}
+    strategy = platform_strategy(variant['strategy_id'])
+    path, name = publish_kit.kit_file(video, cover, post, strategy.label, english=strategy.audience_language == 'en')
+    return FileResponse(path, media_type='application/zip', headers={'Content-Disposition': f"attachment; filename*=UTF-8''{quote(name)}"},
+                        background=BackgroundTask(path.unlink, missing_ok=True))
+
+
+@router.post('/{project_id}/output-variants/{variant_id}/produce')
+def produce_output_variant(project_id: str, variant_id: str, db: Session = Depends(get_db)):
+    project_or_404(project_id, db)
+    return call(jobs.produce_variant, project_id, variant_id)
+
+
+@router.post('/{project_id}/output-variants/{variant_id}/retry')
+def retry_output_variant(project_id: str, variant_id: str, db: Session = Depends(get_db)):
+    project_or_404(project_id, db)
+    return call(jobs.retry_variant, project_id, variant_id)
+
 
 @router.post('/{project_id}/drafts')
 def create_draft(project_id: str, body: CreateDraft, db: Session = Depends(get_db)):
@@ -297,20 +473,62 @@ def rewrite(project_id: str, body: RewriteRequest, db: Session = Depends(get_db)
     try:
         result = intelligence.text_json('你是剪辑文案编辑。按用户要求优化 title 和 hook，保持事实；依据仅限原文与镜头证据。不能声称已修改镜头、声音或视频，也不能承诺投放效果。返回 {"title":"...","hook":"..."}。', {'instruction': body.instruction, 'language': body.draft.language, 'title': body.draft.title, 'hook': body.draft.hook, 'scenes': [s.model_dump() for s in body.draft.scenes]})
         candidate = Draft.model_validate({**body.draft.model_dump(), 'title': result['title'], 'hook': result['hook']})
-    except Exception:
+    except Exception as error:
+        capture_studio_exception(error, 'rewrite')
         raise HTTPException(502, '生成文案失败，请检查模型设置后重试；原稿未改动') from None
     return candidate
+
+@router.get('/{project_id}/subtitles')
+def subtitles(project_id: str, db: Session = Depends(get_db)):
+    """Subtitle cues in seconds, for the editor's styled preview overlay."""
+    from backend.pipeline.quality import to_seconds
+    from backend.services.publish_export import _load_srt_entries
+    project_or_404(project_id, db)
+    entries = _load_srt_entries(project_id)
+    return {'cues': [{'start': to_seconds(e['start_time']), 'end': to_seconds(e['end_time']), 'text': e.get('text', '')} for e in entries]}
+
+@router.get('/framing/status')
+def framing_status():
+    from backend.services.studio import framing
+    return framing.get_status()
+
+@router.post('/framing/install')
+def framing_install():
+    from backend.services.studio import framing
+    return {**framing.start_install(manual=True), **framing.get_status()}
+
+@router.post('/{project_id}/auto-frame')
+def auto_frame(project_id: str, body: Draft, db: Session = Depends(get_db)):
+    """Centre each scene's crop window on the speaker. Pure analysis: nothing is saved."""
+    from backend.services.publish_export import _probe
+    from backend.services.studio import framing
+    project_or_404(project_id, db)
+    if not framing.is_installed():
+        raise HTTPException(409, framing.unavailable_reason())
+    video = call(jobs.source, project_id)
+    info = _probe(video)
+    if not info.get('width') or not info.get('height'):
+        raise HTTPException(422, '无法读取原视频尺寸')
+    try:
+        return framing.auto_frame(video, body, int(info['width']), int(info['height']))
+    except Exception as error:
+        capture_studio_exception(error, 'auto_frame')
+        raise HTTPException(502, '自动取景失败，可手动调整取景位置') from None
 
 @router.post('/{project_id}/drafts/{draft_id}/export')
 def export(project_id: str, draft_id: str, body: ExportDraftRequest | None = None, db: Session = Depends(get_db)):
     project_or_404(project_id, db)
-    raw = next((d for d in store.read(project_id)['drafts'] if d['id'] == draft_id), None)
+    state = store.read(project_id)
+    raw = next((d for d in state['drafts'] if d['id'] == draft_id), None)
     if not raw:
         raise HTTPException(404, '草稿不存在')
     if body and body.revision != raw['revision']:
         raise HTTPException(409, '草稿已在另一窗口更新，请重新加载后再导出')
     draft = Draft.model_validate(raw)
     call(validate_draft, project_id, draft)
+    variant = next((v for v in state.get('output_variants', []) if v['draft_id'] == draft_id), None)
+    if variant:
+        return call(jobs.export, project_id, draft, brand_outro=bool(variant.get('branding', {}).get('outro_enabled', True)))
     return call(jobs.export, project_id, draft)
 
 @router.get('/{project_id}/exports/{job_id}/video')

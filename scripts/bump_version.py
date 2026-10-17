@@ -9,8 +9,10 @@
 会改：
   src-tauri/tauri.conf.json  "version"
   src-tauri/Cargo.toml       version = "..."（[package] 段）
+  src-tauri/Cargo.lock       autoclip-desktop 的 version
   pyproject.toml             version = "..."（[project] 段）
   backend/core/desktop_config.py  AUTOCLIP_APP_VERSION 的回退值
+  backend/__init__.py        CLI / MCP 的 __version__
   CHANGELOG.md               [未发布] → [X.Y.Z] - YYYY-MM-DD，再插入一个空的 [未发布]；底部 compare 链接
 
 只用标准库。
@@ -31,11 +33,14 @@ REPO_URL = "https://github.com/zhouxiaoka/autoclip"
 
 TAURI_CONF = ROOT / "src-tauri" / "tauri.conf.json"
 CARGO_TOML = ROOT / "src-tauri" / "Cargo.toml"
+CARGO_LOCK = ROOT / "src-tauri" / "Cargo.lock"
 PYPROJECT = ROOT / "pyproject.toml"
 DESKTOP_CONFIG = ROOT / "backend" / "core" / "desktop_config.py"
+PACKAGE_INIT = ROOT / "backend" / "__init__.py"
 CHANGELOG = ROOT / "CHANGELOG.md"
 
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+LOCK_VERSION = re.compile(r'(^name = "autoclip-desktop"\nversion = ")[^"]+("$)', re.MULTILINE)
 
 
 def _read(p: Path) -> str:
@@ -55,11 +60,16 @@ def current_versions() -> dict[str, str]:
     m = re.search(r'^\[package\][^\[]*?^version\s*=\s*"([^"]+)"', _read(CARGO_TOML), re.MULTILINE | re.DOTALL)
     out["Cargo.toml"] = m.group(1) if m else "?"
 
+    m = LOCK_VERSION.search(_read(CARGO_LOCK))
+    out["Cargo.lock"] = m.group(0).split('version = "', 1)[1].rstrip('"') if m else "?"
+
     m = re.search(r'^\[project\][^\[]*?^version\s*=\s*"([^"]+)"', _read(PYPROJECT), re.MULTILINE | re.DOTALL)
     out["pyproject.toml"] = m.group(1) if m else "?"
 
     m = re.search(r'os\.getenv\("AUTOCLIP_APP_VERSION",\s*"([^"]+)"\)', _read(DESKTOP_CONFIG))
     out["desktop_config.py"] = m.group(1) if m else "?"
+    m = re.search(r'^__version__\s*=\s*"([^"]+)"', _read(PACKAGE_INIT), re.MULTILINE)
+    out["backend/__init__.py"] = m.group(1) if m else "?"
     return out
 
 
@@ -79,6 +89,10 @@ def set_version(new: str) -> None:
         return new_text
 
     _write(CARGO_TOML, _sub_section(_read(CARGO_TOML), "package"))
+    locked, n = LOCK_VERSION.subn(rf'\g<1>{new}\g<2>', _read(CARGO_LOCK), count=1)
+    if n != 1:
+        raise SystemExit("Cargo.lock 里没找到 autoclip-desktop 版本")
+    _write(CARGO_LOCK, locked)
     _write(PYPROJECT, _sub_section(_read(PYPROJECT), "project"))
 
     dc = _read(DESKTOP_CONFIG)
@@ -86,6 +100,10 @@ def set_version(new: str) -> None:
     if n != 1:
         raise SystemExit("desktop_config.py 里没找到 AUTOCLIP_APP_VERSION 回退值")
     _write(DESKTOP_CONFIG, dc_new)
+    package, n = re.subn(r'(^__version__\s*=\s*")[^"]+("$)', rf"\g<1>{new}\g<2>", _read(PACKAGE_INIT), count=1, flags=re.MULTILINE)
+    if n != 1:
+        raise SystemExit("backend/__init__.py 里没找到 __version__")
+    _write(PACKAGE_INIT, package)
 
 
 def roll_changelog(new: str, today: str) -> None:
@@ -154,10 +172,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"已把 {', '.join(versions)} 改为 {new}，CHANGELOG 已滚动到 [{new}] - {args.date}")
 
     if args.commit:
-        files = [str(p.relative_to(ROOT)) for p in (TAURI_CONF, CARGO_TOML, PYPROJECT, DESKTOP_CONFIG, CHANGELOG)]
+        files = [str(p.relative_to(ROOT)) for p in (TAURI_CONF, CARGO_TOML, CARGO_LOCK, PYPROJECT, DESKTOP_CONFIG, PACKAGE_INIT, CHANGELOG)]
         subprocess.run(["git", "add", *files], cwd=ROOT, check=True)
         subprocess.run(["git", "commit", "-m", f"chore: release v{new}"], cwd=ROOT, check=True)
-        print(f"已提交。下一步：git tag v{new} && git push origin main v{new}")
+        print("已提交未公开候选源码。下一步：推送候选分支，运行未打标签的 Desktop Build；双平台产品验收和 Internal Acceptance 通过后，才在被验收提交创建带验收回执的标签。")
     return 0
 
 

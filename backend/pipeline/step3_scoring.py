@@ -7,6 +7,7 @@ import re
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from collections import defaultdict
+from .scoring_backend import ScoringBackend, LLMScoringBackend
 
 # 导入依赖
 from ..utils.llm_client import LLMClient
@@ -39,8 +40,8 @@ def resolve_min_score_threshold() -> float:
 class ClipScorer:
     """内容评分器"""
     
-    def __init__(self, prompt_files: Dict = None, metadata_dir: Path = None):
-        self.llm_client = LLMClient()
+    def __init__(self, prompt_files: Dict = None, metadata_dir: Path = None,
+                 scoring_backend: Optional[ScoringBackend] = None):
         self.text_processor = TextProcessor()
         self.metadata_dir = Path(metadata_dir) if metadata_dir else None
         
@@ -48,6 +49,8 @@ class ClipScorer:
         prompt_files_to_use = prompt_files if prompt_files is not None else PROMPT_FILES
         with open(prompt_files_to_use['recommendation'], 'r', encoding='utf-8') as f:
             self.recommendation_prompt = f.read()
+
+        self.scoring_backend = scoring_backend if scoring_backend is not None else LLMScoringBackend(LLMClient(), self.recommendation_prompt)
 
         from .quality import load_srt_chunks
         self._srt_entries = load_srt_chunks(self.metadata_dir) if self.metadata_dir else []
@@ -72,21 +75,22 @@ class ClipScorer:
                 logger.warning(f"  > 话题 '{item.get('outline', '未知')}' 缺少 chunk_index，将被跳过。")
         
         all_scored_clips = []
-        # 2. 遍历每个块，批量处理其中的所有话题
-        for chunk_index, chunk_items in timeline_by_chunk.items():
+        # 2. 每个块独立评分（并行，结果按块顺序）
+        def score_chunk(item):
+            chunk_index, chunk_items = item
             logger.info(f"处理块 {chunk_index}，其中包含 {len(chunk_items)} 个话题...")
             try:
-                # 3. 使用LLM进行批量评估
                 scored_chunk_items = self._get_llm_evaluation(chunk_items)
-                
-                if scored_chunk_items:
-                    all_scored_clips.extend(scored_chunk_items)
-                else:
+                if not scored_chunk_items:
                     logger.warning(f"块 {chunk_index} 的LLM评估返回为空，跳过。")
-
+                return scored_chunk_items or []
             except Exception as e:
                 logger.error(f"  > 处理块 {chunk_index} 进行评分时出错: {str(e)}")
-                continue
+                return []
+
+        from .concurrency import map_chunks
+        for scored_chunk_items in map_chunks(score_chunk, timeline_by_chunk.items()):
+            all_scored_clips.extend(scored_chunk_items)
 
         # 4. 按最终得分对所有结果进行排序
         if all_scored_clips:
@@ -120,6 +124,7 @@ class ClipScorer:
         try:
             input_for_llm = [
                 {
+                    "id": clip.get('id'),
                     "outline": clip.get('outline'),
                     "content": clip.get('content'),
                     "start_time": clip.get('start_time'),
@@ -128,9 +133,9 @@ class ClipScorer:
                 } for clip in clips
             ]
 
-            response = self.llm_client.call_with_retry(self.recommendation_prompt, input_for_llm)
-            parsed_list = self.llm_client.parse_json_response(response)
-            scored, stats = align_scores(clips, parsed_list)
+            parsed_list = self.scoring_backend.score(input_for_llm)
+            source = "llm" if isinstance(self.scoring_backend, LLMScoringBackend) else "backend"
+            scored, stats = align_scores(clips, parsed_list, score_source=source)
             logger.info(f"  > 评分对齐: 命中 {stats['matched']}，兜底 {stats['fallback']}")
             return scored
 
@@ -145,7 +150,8 @@ class ClipScorer:
             json.dump(scored_clips, f, ensure_ascii=False, indent=2)
         logger.info(f"评分结果已保存到: {output_path}")
 
-def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None) -> List[Dict]:
+def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None,
+                      scoring_backend: Optional[ScoringBackend] = None) -> List[Dict]:
     """
     运行Step 3: 内容评分与筛选
     
@@ -166,7 +172,7 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
 
     from .quality import load_profile, select_clips, save_report
 
-    scorer = ClipScorer(prompt_files, metadata_dir=metadata_dir)
+    scorer = ClipScorer(prompt_files, metadata_dir=metadata_dir, scoring_backend=scoring_backend)
     scored_clips = scorer.score_clips(timeline_data)
 
     profile = load_profile(metadata_dir)

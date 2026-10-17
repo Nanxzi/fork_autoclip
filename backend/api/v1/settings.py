@@ -14,17 +14,83 @@ from pydantic import BaseModel, Field, validator
 
 logger = logging.getLogger(__name__)
 
+from backend import __version__
 from backend.core.desktop_config import get_desktop_config, is_desktop_mode, DesktopConfig, save_desktop_config
 from backend.services.config_sync_service import config_sync_service
 from pathlib import Path
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
+from backend.services import ai_model_settings as ai_models
+from backend.services import output_branding
+
+
+@router.get('/output-branding')
+def get_output_branding():
+    return output_branding.load_settings()
+
+
+@router.put('/output-branding')
+def set_output_branding(body: output_branding.BrandingSettings):
+    return output_branding.save_settings(body)
+
+
+@router.get('/ai-models')
+def get_ai_models():
+    return ai_models.public(ai_models.for_editing())
+
+
+@router.put('/ai-models')
+def put_ai_models(body: ai_models.ModelSettings):
+    try:
+        return ai_models.save(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class ConnectionModelsRequest(BaseModel):
+    connection: ai_models.Connection
+    refresh: bool = False
+
+
+@router.post('/ai-models/discover')
+async def discover_connection_models(body: ConnectionModelsRequest):
+    from backend.core.model_registry import discover
+    try:
+        connection = ai_models.resolve_secret(body.connection, ai_models.for_editing())
+        return await discover(connection, body.refresh)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class ConnectionTestRequest(BaseModel):
+    connection: ai_models.Connection
+    model: str = Field(min_length=1, max_length=200)
+    vision: bool = False
+
+
+@router.post('/ai-models/test')
+def test_connection_assignment(body: ConnectionTestRequest):
+    from backend.core.llm_providers import LLMProviderFactory, ProviderType
+    try:
+        connection = ai_models.resolve_secret(body.connection, ai_models.for_editing())
+        endpoint = ai_models.chat_endpoint(connection, body.model)
+        if body.vision:
+            from backend.services.studio.vision_settings import test, VisionSettingsInput
+            return test(VisionSettingsInput(mode='custom', **endpoint))
+        provider = LLMProviderFactory.create_provider(ProviderType.OPENAI, endpoint['api_key'],
+                                                      body.model, base_url=endpoint['base_url'])
+        return {'success': provider.test_connection()}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        return {'success': False, 'error': '连接测试失败，请检查接口、密钥和模型'}
+
 
 class BasicSettings(BaseModel):
     """基础设置"""
     app_name: str = Field(default="AutoClip Desktop", description="应用名称")
-    app_version: str = Field(default="1.0.0", description="应用版本")
+    app_version: str = Field(default=__version__, description="应用版本")
     debug_mode: bool = Field(default=False, description="调试模式")
     auto_start: bool = Field(default=True, description="自动启动")
 
@@ -58,6 +124,8 @@ class ApiKeys(BaseModel):
     kimi: str = Field(default="", description="Kimi / 月之暗面 API密钥")
     glm: str = Field(default="", description="智谱 GLM API密钥")
     grok: str = Field(default="", description="xAI Grok API密钥")
+    infistar: str = Field(default="", description="Infistar 无限星河 API密钥")
+    api88: str = Field(default="", description="88API API密钥")
     seed: str = Field(default="", description="火山方舟 Seed / 豆包 API密钥")
     jimeng_access: str = Field(default="", description="即梦AI访问密钥")
     jimeng_secret: str = Field(default="", description="即梦AI秘密密钥")
@@ -66,7 +134,7 @@ class ApiKeys(BaseModel):
 class ApiSettings(BaseModel):
     """API设置"""
     api_keys: ApiKeys = Field(default_factory=ApiKeys, description="API密钥")
-    api_provider: str = Field(default="dashscope", description="当前 LLM 提供商（dashscope / openai / gemini / deepseek / seed / kimi / glm / grok，或本地预设 ollama / lmstudio）")
+    api_provider: str = Field(default="dashscope", description="当前 LLM 提供商（dashscope / openai / gemini / deepseek / seed / kimi / glm / grok / infistar / api88，或本地预设 ollama / lmstudio）")
     api_base_url: str = Field(default="", description="OpenAI 兼容接口地址；provider=openai 时空为官方地址，本地预设为空时用预设默认地址")
     api_model: str = Field(default="qwen-plus", description="默认模型")
     api_max_tokens: int = Field(default=4096, description="最大Token数")
@@ -166,6 +234,19 @@ async def get_privacy():
     return PrivacySettings(crash_reports=crash_reports_enabled())
 
 
+class AnalyticsIdentity(BaseModel):
+    distinct_id: str = Field(min_length=8, max_length=200)
+
+
+@router.put("/analytics-identity")
+async def put_analytics_identity(body: AnalyticsIdentity):
+    """Remember the UI's anonymous PostHog id. Backend QA events reuse it."""
+    from backend.services.studio.qa.telemetry import remember_distinct_id
+    if not remember_distinct_id(body.distinct_id):
+        raise HTTPException(status_code=422, detail="invalid distinct_id")
+    return {"ok": True}
+
+
 @router.put("/privacy")
 async def put_privacy(body: PrivacySettings):
     from backend.core.sentry_setup import write_privacy, crash_reports_enabled, init_sentry
@@ -258,6 +339,8 @@ async def get_settings():
                     kimi="",
                     glm="",
                     grok="",
+                    infistar="",
+                    api88="",
                     seed="",
                     jimeng_access="",  # 默认值
                     jimeng_secret=""   # 默认值
@@ -692,6 +775,8 @@ def _saved_provider_api_key(settings: DesktopSettings, provider: str) -> str:
         "kimi": keys.kimi,
         "glm": keys.glm,
         "grok": keys.grok,
+        "infistar": keys.infistar,
+        "api88": keys.api88,
         "seed": keys.seed,
     }.get((provider or "").strip().lower(), "") or ""
 

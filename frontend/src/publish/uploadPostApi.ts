@@ -1,3 +1,5 @@
+import { workflow } from '../analytics/observer'
+import { observeStudioOperation } from '../analytics/studio'
 import api from '../services/api'
 
 export interface UploadPostConfigView {
@@ -40,6 +42,7 @@ export interface PublishClipBody {
   platforms: string[]
   user?: string
   preset?: string
+  output_variant_id?: string
   title?: string
   description?: string
   subtitles: boolean
@@ -67,7 +70,7 @@ export const uploadPostApi = {
   clearConfig: (): Promise<{ ok: boolean; configured: boolean }> => api.delete('/publish/upload-post/config'),
   profiles: (): Promise<{ profiles: UploadPostProfile[] }> => api.get('/publish/upload-post/profiles'),
   start: (projectId: string, clipId: string, body: PublishClipBody): Promise<{ ok: boolean; job_id: string; status: string }> =>
-    api.post(`/publish/upload-post/${projectId}/clips/${clipId}`, body),
+    observeStudioOperation('social_publish', () => api.post(`/publish/upload-post/${projectId}/clips/${clipId}`, body), undefined, { ...workflow.context(projectId), source_type: /^studio-[a-f0-9]{32}$/.test(clipId) ? 'studio' : 'legacy', gateway: 'upload-post', scheduled: !!body.scheduled_date }),
   job: (jobId: string): Promise<PublishJobView> => api.get(`/publish/upload-post/jobs/${jobId}`),
   records: (projectId: string): Promise<{ records: PublishRecord[] }> => api.get(`/publish/upload-post/${projectId}/records`),
   cancel: (projectId: string, requestId: string): Promise<{ ok: boolean; status: string }> =>

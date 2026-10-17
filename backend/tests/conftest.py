@@ -16,6 +16,67 @@ import os
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
+# 测试库放临时目录。默认的 sqlite:///./data/autoclip.db 相对 cwd，
+# test_repositories 的 reset_database() 会 drop_all 掉开发者本机的库。
+# 必须在任何 backend.core.database 导入之前设置。
+_TEST_DB_DIR = tempfile.mkdtemp(prefix="autoclip-tests-")
+os.environ.setdefault("DATABASE_URL", f"sqlite:///{Path(_TEST_DB_DIR) / 'autoclip.db'}")
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "stdlib_only: runtime regression without application dependencies")
+
+
+class _FollowStudioExecutor:
+    """Route Studio renders through whatever `jobs.executor` a test installed."""
+
+    def __init__(self, jobs):
+        self.jobs = jobs
+
+    def submit(self, *args, **kwargs):
+        return self.jobs.executor.submit(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _studio_render_follows_executor(monkeypatch):
+    # Tests stub `jobs.executor` to run work inline; keep renders on that stub instead of
+    # the real background render worker. Tests that target `render_executor` override this.
+    jobs = sys.modules.get("backend.services.studio.jobs")
+    if jobs is not None:
+        monkeypatch.setattr(jobs, "render_executor", _FollowStudioExecutor(jobs))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _qa_stays_off_for_unrelated_renders(monkeypatch, request):
+    # Shadow QA is queued after every completed render. Other suites must not
+    # spawn that worker; test_studio_qa covers the real path.
+    if request.node.get_closest_marker("stdlib_only"):
+        yield
+        return
+    name = getattr(request.node.module, "__name__", "")
+    if name.endswith("test_studio_qa"):
+        yield
+        return
+    monkeypatch.setenv("AUTOCLIP_QA_DISABLED", "1")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _isolated_branding_settings(tmp_path, monkeypatch, request):
+    if request.node.get_closest_marker("stdlib_only"):
+        return
+    from backend.services import output_branding
+    monkeypatch.setattr(output_branding, 'settings_path', lambda: tmp_path / 'output-branding.json')
+
+
+@pytest.fixture(autouse=True)
+def _no_framing_install(monkeypatch, request):
+    # Automatic output starts the on-demand OpenCV install; tests must never run pip.
+    if not request.node.get_closest_marker("stdlib_only"):
+        from backend.services.studio import framing
+        monkeypatch.setattr(framing, "start_install", lambda index_url=None: {"started": False, "message": "test"})
+    yield
 
 @pytest.fixture(scope="session")
 def test_data_dir(tmp_path_factory):
@@ -247,4 +308,4 @@ def assert_dict_contains(dict_obj: dict, expected_keys: list, description: str =
 def assert_error_contains(error: Exception, expected_message: str, description: str = ""):
     """断言错误信息包含指定内容"""
     assert expected_message in str(error), \
-        f"错误信息不包含预期内容: {expected_message} {description}" 
+        f"错误信息不包含预期内容: {expected_message} {description}"

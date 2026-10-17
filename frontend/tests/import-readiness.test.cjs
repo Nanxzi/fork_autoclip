@@ -1,0 +1,223 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+const vm = require('node:vm')
+const ts = require('typescript')
+
+function transpile(file) {
+  const exports = {}
+  const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 },
+  }).outputText
+  return { exports, code }
+}
+
+function loadReadiness() {
+  const file = path.join(__dirname, '../src/features/studio/importReadiness.ts')
+  const { exports, code } = transpile(file)
+  vm.runInNewContext(code, { exports, require() { throw new Error('unexpected import') } })
+  return exports
+}
+
+const readiness = loadReadiness()
+const check = (ok, code, repair) => ({ ok, code, repair })
+function report(overrides = {}) {
+  return {
+    analysis_mode: 'auto',
+    ready: false,
+    checks: {
+      analysis: check(true, 'configured', 'none'),
+      transcription: check(true, 'whisper_installed', 'none'),
+      visual: check(true, 'optional', 'none'),
+      ffmpeg: check(true, 'available', 'none'),
+      ...overrides,
+    },
+  }
+}
+
+test('submit waits for the probe, then blocks analysis, visual, ffmpeg, and transcription without an srt', () => {
+  const { submissionBlock } = readiness
+  assert.equal(submissionBlock(null, false, false), 'pending')
+  assert.equal(submissionBlock(null, false, true), null)
+  assert.equal(submissionBlock(report({ analysis: check(false, 'not_configured', 'settings_ai') }), true, true), 'analysis')
+  assert.equal(submissionBlock(report({ transcription: check(false, 'whisper_not_installed', 'install_whisper') }), false, true), 'transcription')
+  assert.equal(submissionBlock(report({ transcription: check(false, 'whisper_not_installed', 'install_whisper') }), true, true), null)
+  assert.equal(submissionBlock(report({ visual: check(false, 'not_configured', 'settings_vision') }), false, true), 'visual')
+  assert.equal(submissionBlock(report({ ffmpeg: check(false, 'missing', 'none') }), true, true), 'ffmpeg')
+  assert.equal(submissionBlock(report(), false, true), null)
+})
+
+test('an attached subtitle hides the transcription nag and repair targets match settings sections', () => {
+  const value = report({
+    transcription: check(false, 'whisper_not_installed', 'install_whisper'),
+    ffmpeg: check(false, 'missing', 'none'),
+  })
+  assert.equal(readiness.visibleIssues(value, false).map(item => item.key).join(','), 'transcription,ffmpeg')
+  assert.equal(readiness.visibleIssues(value, true).map(item => item.key).join(','), 'ffmpeg')
+  assert.equal(readiness.repairDestination('settings_ai'), '/settings?section=ai')
+  assert.equal(readiness.repairDestination('settings_transcription'), '/settings?section=speech')
+  assert.equal(readiness.repairDestination('settings_vision'), '/settings?section=vision')
+  assert.equal(readiness.repairDestination('install_whisper'), null)
+  assert.equal(readiness.repairDestination('none'), null)
+})
+
+class FormDataMock {
+  constructor() { this.rows = [] }
+  append(key, value) { this.rows.push([key, String(value)]) }
+  get(key) { const row = this.rows.find(item => item[0] === key); return row && row[1] }
+  entries() { return this.rows.values() }
+}
+
+function nodes(value) {
+  return !value || typeof value !== 'object' ? [] : Array.isArray(value) ? value.flatMap(nodes) : [value, ...nodes(value.props?.children)]
+}
+
+function render(options = {}) {
+  const calls = []
+  const navigations = []
+  const installs = []
+  const blocked = []
+  let index = 0
+  const value = options.report === undefined ? report() : options.report
+  const states = [
+    [options.source || 'link', () => {}],
+    [options.url === undefined ? 'https://youtube.com/watch?v=video' : options.url, () => {}],
+    [null, () => {}],
+    [options.subtitle || null, () => {}],
+    [{ goal: 'auto', language: 'source', aspect: null, duration: null, instruction: '' }, () => {}],
+    ['', () => {}],
+    [['douyin'], () => {}],
+    [false, () => {}],
+    [false, () => {}],
+    ['', () => {}],
+    [value, () => {}],
+    [options.settled !== false, () => {}],
+    [false, () => {}],
+  ]
+  const { exports, code } = transpile(path.join(__dirname, '../src/features/studio/CreativeImport.tsx'))
+  const mocks = {
+    'react-i18next': { useTranslation() {} },
+    '../../i18n': { t: text => text },
+    react: { useState: () => states[index++], useEffect() {}, useRef: current => ({ current }) },
+    antd: { Select: 'select' },
+    'react-router-dom': { useNavigate: () => destination => navigations.push(destination) },
+    'react/jsx-runtime': { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }), Fragment: 'fragment' },
+    '../../ui': { Btn: 'button', Segmented: 'segmented', Dialog: 'dialog', StatusDot: 'status' },
+    './PlatformPicker': { default: 'platform-picker' },
+    './api': {
+      studioApi: {
+        import: async body => { calls.push(body); return { project_id: 'project-1' } },
+        readiness: async () => value,
+      },
+      errorText: String,
+    },
+    '../../analytics/studio': { trackQuickOutputPlatforms() {}, trackAsrReadiness() {} },
+    '../../analytics/flags': { useFlag: () => false, featureSnapshot: () => ({ pkg_templates_v1: false }) },
+    './TemplatePicker': { default: 'template-picker', templateImportFields: () => ({}) },
+    './StyleProbeLine': { default: 'style-probe' },
+    './editingStyleSession': { readStyle: () => ({ key: '', status: 'idle', result: null, latencyMs: 0 }) },
+    '../../analytics/experience': { trackExperience() {} },
+    './types': { defaultImportOptions: { goal: 'auto', language: 'source', aspect: null, duration: null, instruction: '' } },
+    './ImportPreferences': { default: 'preferences' },
+    '../../services/api': { speechApi: {
+      installRuntime: async () => { installs.push('whisper'); return { started: true, message: '' } },
+      downloadModel: async model => { installs.push('model:' + model); return { status: 'downloading', model, message: '' } },
+    } },
+    './importReadiness': readiness,
+    './studio.css': {},
+    './quick-output.css': {},
+  }
+  vm.runInNewContext(code, { FormData: FormDataMock, exports, require: id => { assert.ok(id in mocks, id); return mocks[id] } })
+  const tree = nodes(exports.default({ onImported: async () => {}, blocked: !!options.blocked, onBlocked: () => blocked.push('setup') }))
+  return { tree, calls, navigations, installs, blocked }
+}
+
+function button(tree, label) {
+  return tree.find(node => node.type === 'button' && node.props?.children === label)
+}
+
+test('the banner installs whisper, opens first-run setup, and blocks an unready import', async () => {
+  const failing = report({
+    analysis: check(false, 'not_configured', 'settings_ai'),
+    transcription: check(false, 'whisper_not_installed', 'install_whisper'),
+  })
+  const opened = render({ report: failing, blocked: true })
+  assert.ok(opened.tree.some(node => node.props?.className === 'studio-readiness'))
+  await button(opened.tree, '连接 AI 服务').props.onClick()
+  assert.deepEqual(opened.blocked, ['setup'])
+  assert.deepEqual(opened.navigations, [])
+  await button(opened.tree, '安装 Whisper').props.onClick()
+  assert.deepEqual(opened.installs, ['whisper'])
+  const unready = render({ report: failing })
+  await button(unready.tree, '生成成片').props.onClick()
+  assert.equal(unready.calls.length, 0)
+
+  const withSubtitle = render({
+    report: report({ transcription: check(false, 'sensevoice_not_ready', 'settings_transcription') }),
+    subtitle: { name: 'captions.srt' },
+  })
+  assert.equal(withSubtitle.tree.some(node => node.props?.className === 'studio-readiness'), false)
+  await button(withSubtitle.tree, '生成成片').props.onClick()
+  assert.equal(withSubtitle.calls.length, 1)
+  assert.equal(withSubtitle.calls[0].get('subtitle'), '[object Object]')
+})
+
+test('vision repair opens the vision settings section', async () => {
+  const view = render({ report: report({ visual: check(false, 'not_configured', 'settings_vision') }) })
+  await button(view.tree, '视觉设置').props.onClick()
+  assert.deepEqual(view.navigations, ['/settings?section=vision'])
+})
+
+test('an installed runtime without its model offers the model download, not another install', async () => {
+  // RC156 Win QA #5: readiness used to report ready with only the runtime installed.
+  const missing = report({ transcription: { ...check(false, 'whisper_model_missing', 'install_whisper'), model: 'small' } })
+  const view = render({ report: missing })
+  assert.equal(button(view.tree, '安装 Whisper'), undefined)
+  await button(view.tree, '下载转写模型').props.onClick()
+  assert.deepEqual(view.installs, ['model:small'])
+  assert.equal(readiness.submissionBlock(missing, false, true), 'transcription')
+  assert.equal(readiness.submissionBlock(missing, true, true), null)
+  const downloading = render({ report: report({ transcription: { ...check(false, 'whisper_model_downloading', 'none'), model: 'small' } }) })
+  assert.ok(downloading.tree.some(node => node.type === 'status' && node.props?.label === '正在下载转写模型…' && node.props?.tone === 'accent'))
+  const unready = render({ report: missing })
+  await button(unready.tree, '生成成片').props.onClick()
+  assert.equal(unready.calls.length, 0)
+})
+
+test('AUTOCLIP-FRONTEND-C: a readiness report without checks or transcription does not throw', () => {
+  for (const partial of [
+    { analysis_mode: 'auto', ready: false },
+    { analysis_mode: 'auto', ready: false, checks: null },
+    { analysis_mode: 'auto', ready: false, checks: {} },
+    { analysis_mode: 'auto', ready: false, checks: { analysis: check(true, 'configured', 'none') } },
+  ]) {
+    assert.equal(readiness.visibleIssues(partial, false).length, 0)
+    assert.equal(readiness.submissionBlock(partial, false, true), null)
+  }
+  const onlyFfmpeg = { analysis_mode: 'auto', ready: false, checks: { ffmpeg: check(false, 'ffmpeg_missing', 'none') } }
+  assert.equal(readiness.submissionBlock(onlyFfmpeg, false, true), 'ffmpeg')
+  assert.equal(readiness.visibleIssues(onlyFfmpeg, false).map(item => item.key).join(','), 'ffmpeg')
+})
+
+test('ASR readiness properties infer provider from the check code and never need a model name', () => {
+  const { asrReadinessProperties } = readiness
+  const local = asrReadinessProperties(report({ transcription: check(false, 'whisper_not_installed', 'install_whisper') }), false)
+  assert.equal(local.provider, 'whisper_local')
+  assert.equal(local.code, 'whisper_not_installed')
+  assert.equal(local.has_subtitle, false)
+  assert.equal(local.blocked, true)
+  const sense = asrReadinessProperties(report({ transcription: check(false, 'sensevoice_not_ready', 'settings_transcription') }), true)
+  assert.equal(sense.provider, 'sensevoice_local')
+  assert.equal(sense.blocked, false)
+  const cloud = asrReadinessProperties(report({ transcription: check(false, 'cloud_not_configured', 'settings_transcription') }), false)
+  assert.equal(cloud.provider, 'cloud')
+  assert.equal(cloud.blocked, true)
+  assert.equal(asrReadinessProperties({ analysis_mode: 'auto', ready: false }, false).provider, 'whisper_local')
+  assert.equal(asrReadinessProperties({ analysis_mode: 'auto', ready: false }, false).blocked, false)
+})
+
+test('CreativeImport reads readiness transcription with optional chaining at every level', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/features/studio/CreativeImport.tsx'), 'utf8')
+  assert.doesNotMatch(source, /readiness\?\.checks\.|checks\?\.transcription\.code/)
+})

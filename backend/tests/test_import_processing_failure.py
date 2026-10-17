@@ -356,7 +356,7 @@ def test_import_blank_whisper_result_is_transcription_empty(tmp_path, monkeypatc
     module = types.ModuleType("faster_whisper")
 
     class FakeModel:
-        def __init__(self, model, device="auto", compute_type="int8", download_root=None):
+        def __init__(self, model, device="auto", compute_type="int8", download_root=None, **kwargs):
             pass
 
         def transcribe(self, path, language=None, vad_filter=False, word_timestamps=False):
@@ -369,6 +369,11 @@ def test_import_blank_whisper_result_is_transcription_empty(tmp_path, monkeypatc
     monkeypatch.setattr(whisper_runtime, "ensure_on_path", lambda: None)
     monkeypatch.setattr(whisper_runtime, "get_models_dir", lambda: tmp_path / "models")
     monkeypatch.delenv("AUTOCLIP_WHISPER_DEVICE", raising=False)
+    # A downloaded model: transcription never downloads by itself in this test.
+    snapshot = tmp_path / "models/hub/models--Systran--faster-whisper-base/snapshots/fixture"
+    snapshot.mkdir(parents=True)
+    for name in ("model.bin", "config.json", "tokenizer.json", "vocabulary.json"):
+        (snapshot / name).write_bytes(b"fixture")
 
     video = tmp_path / "input.mp4"
     video.write_bytes(b"not-a-real-video")
@@ -468,3 +473,26 @@ def test_unexpected_and_key_messages_do_not_share_a_type():
     key = classify_import_failure("OpenAI API不可用，请设置OPENAI_API_KEY环境变量", "subtitle_setup")
     assert key is ImportMissingCredential
     assert key.kind == "missing-key"
+
+
+def test_silent_or_short_source_fails_before_transcription_and_is_not_a_crash(memory_backend, project_service, tmp_path, monkeypatch):
+    """RC156 Win QA #10/#11 on the legacy import task: no transcription, no pipeline, own exception kind."""
+    import shutil
+    import subprocess
+    from backend.pipeline import media_precheck
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg unavailable")
+    video = tmp_path / "input.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=64x36:r=5:d=21", "-y", str(video)], check=True)
+    monkeypatch.setattr(mod, "_generate_import_subtitle", lambda *a: pytest.fail("no transcription for a silent source"))
+    monkeypatch.setattr(mod, "submit_video_pipeline_task", lambda **k: pytest.fail("no pipeline for a silent source"))
+    monkeypatch.setattr(mod, "generate_project_thumbnail", lambda *a: None)
+
+    raised, meta = _run_import(memory_backend, "task-silent", "proj-silent", str(video), None)
+
+    assert type(raised) is mod.ImportSourceUnusable and raised.kind == "source-input"
+    assert meta["status"] == "FAILURE" and type(meta["result"]) is mod.ImportSourceUnusable
+    assert project_service.project.status == "failed"
+    assert project_service.project.project_metadata["last_error_code"] == "source_no_audio"
+    assert project_service.project.project_metadata["last_error"] == media_precheck.NO_AUDIO_MESSAGE
+    assert mod.classify_import_failure("x", "source_too_short") is mod.ImportSourceUnusable

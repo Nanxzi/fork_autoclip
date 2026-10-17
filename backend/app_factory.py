@@ -8,12 +8,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from backend import __version__
 from backend.api.v1 import api_router
 from backend.api.v1.health import router as health_router
 from backend.core.database import engine
 from backend.models.base import Base
 from backend.core.config import get_logging_config, get_api_key
 from backend.core.error_middleware import global_exception_handler
+from backend.core.local_origin_guard import LocalOriginGuard, allowed_origins
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,10 @@ def create_app(mode: str = "web") -> FastAPI:
     """
     # 设置模式环境变量
     os.environ["AUTOCLIP_MODE"] = mode
+
+    if mode == "desktop":
+        from backend.core.windows_asyncio import install_windows_proactor_cleanup
+        install_windows_proactor_cleanup()
 
     try:
         from backend.core.sentry_setup import init_sentry
@@ -48,7 +54,7 @@ def create_app(mode: str = "web") -> FastAPI:
     app = FastAPI(
         title="AutoClip API",
         description="AI视频切片处理API",
-        version="1.0.0",
+        version=__version__,
         docs_url="/docs",
         redoc_url="/redoc"
     )
@@ -56,10 +62,13 @@ def create_app(mode: str = "web") -> FastAPI:
     # 设置应用状态
     app.state.mode = mode
     
-    # 配置 CORS
+    # 来源守卫在内、CORS 在外：预检由 CORS 应答，其他网页的写请求由守卫拦下。
+    # 以前是 allow_origins=["*"] + allow_credentials，任意网页都能读设置里的 API Key。
+    origins = allowed_origins()
+    app.add_middleware(LocalOriginGuard, origins=origins, enforce_local_host=(mode == "desktop"))
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # 生产环境需要配置具体域名
+        allow_origins=origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -84,6 +93,18 @@ def create_app(mode: str = "web") -> FastAPI:
                 logger.info("已将 %s 条项目记录中的旧枚举值改写为当前版本可识别的值", changed)
         except Exception:
             logger.exception("清洗项目枚举旧值失败，列表读取会使用降级值")
+        try:
+            # 上次进程被结束时还在跑的 Studio 任务不会再继续：标为失败并写明原因（RC156 #13）
+            from backend.services.studio.restart_recovery import reconcile_interrupted_projects
+            reconcile_interrupted_projects()
+        except Exception:
+            logger.exception("Studio 重启恢复失败，打开项目时会再次尝试")
+        try:
+            # 只清 projects 根下、库里没有对应行的残留目录；库读失败则什么都不删（RC156 PR4）
+            from backend.services.project_orphan_cleanup import cleanup_orphan_project_directories
+            cleanup_orphan_project_directories()
+        except Exception:
+            logger.exception("清理无数据库行的残留项目目录失败")
         
         # 加载 API 密钥到环境变量
         api_key = get_api_key()
@@ -105,6 +126,8 @@ def create_app(mode: str = "web") -> FastAPI:
     @app.on_event("shutdown")
     async def shutdown_event():
         logger.info("正在关闭 AutoClip API 服务...")
+        from backend.services import child_guard
+        child_guard.kill_all()
         logger.info("WebSocket 网关服务已禁用")
     
     # 注册路由
@@ -177,7 +200,7 @@ def create_app(mode: str = "web") -> FastAPI:
             return {
                 "status": "ok",
                 "mode": mode,
-                "version": "1.0.0"
+                "version": __version__
             }
         except Exception as e:
             return JSONResponse(

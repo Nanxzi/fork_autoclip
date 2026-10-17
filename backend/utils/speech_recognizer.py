@@ -102,7 +102,7 @@ class SpeechRecognitionConfig:
                 raise ValueError(f"不支持的语言代码: {self.language}")
         
         # 验证模型
-        valid_models = ["tiny", "base", "small", "medium", "large"]
+        valid_models = ["tiny", "base", "small", "medium", "large", "large-v3"]
         if self.model not in valid_models:
             raise ValueError(f"不支持的Whisper模型: {self.model}")
         
@@ -177,6 +177,21 @@ def srt_has_cue_text(path: Path) -> bool:
 def describe_whisper_failure(exc: BaseException) -> str:
     """给客户端的一句说明，不带本地路径。"""
     low = f"{type(exc).__name__} {exc}".lower()
+    if isinstance(exc, ImportError) or "dll load failed" in low or "winerror 126" in low:
+        return (
+            "Whisper 运行时依赖加载失败。请到「设置 → 转写」卸载后重新安装 Whisper，"
+            "然后重启 AutoClip；Windows 用户还需检查 Microsoft Visual C++ 运行库。"
+        )
+    if isinstance(exc, MemoryError) or any(token in low for token in ("out of memory", "bad_alloc", "cannot allocate memory")):
+        return "Whisper 转写时内存不足。请到「设置 → 转写」改用 tiny 或 base 模型，关闭其他占用内存的程序后重试。"
+    if isinstance(exc, PermissionError):
+        return "Whisper 无法读写视频、模型或字幕文件。请检查文件访问权限，并确认文件没有被其他程序占用。"
+    if any(token in low for token in ("connectionerror", "connecterror", "timeout", "certificate_verify_failed")):
+        return "Whisper 模型下载连接失败。请检查网络，并到「设置 → 转写」完成所选模型下载后重试。"
+    if any(token in low for token in ("model.bin", "tokenizer.json", "config.json", "localentrynotfounderror")):
+        return "Whisper 模型文件缺失或不完整。请到「设置 → 转写」删除所选模型并重新下载后重试。"
+    if any(token in low for token in ("invaliddataerror", "invalid data found", "does not have any audio", "no audio stream")):
+        return "Whisper 无法解码视频音轨。请确认视频包含可播放的音频，或重新导入视频并附带 SRT 字幕。"
     if type(exc).__name__ in {"Fail", "InvalidArgument", "NoSuchFile"} or "onnxruntime" in low:
         return (
             "本地语音活动检测没有跑起来，字幕转写已中断。"
@@ -189,9 +204,11 @@ def describe_whisper_failure(exc: BaseException) -> str:
         )
     if "n_fft" in low or "no speech" in low or ("audio" in low and "empty" in low):
         return "没有从这段视频里识别到可用语音。请确认视频包含清晰人声，或直接导入 SRT 字幕。"
+    # 不把内部异常名（IndexError 之类）放进界面文案；类型和原文只进日志（RC156 #11）。
     return (
         "本地 Whisper 生成字幕失败。"
-        "请到「设置 → 转写」确认模型已下载，并检查视频有可播放的音轨。"
+        "请到「设置 → 转写」确认模型已下载，并检查视频有可播放的音轨；"
+        "若仍失败，请通过反馈附上本次错误和脱敏日志。"
     )
 
 
@@ -459,6 +476,21 @@ class SpeechRecognizer:
             language = None if config.language == LanguageCode.AUTO else config.language.value.split("-")[0]
             models_dir = str(whisper_runtime.get_models_dir() / "hub")
             device, compute_type = resolve_local_whisper_backend()
+            from backend.services.whisper_model_manager import canonical_model_name, get_model_manager
+            manager = get_model_manager()
+            cached_model = manager.get_local_model_path(config.model)
+            if cached_model is None and canonical_model_name(config.model) in manager.model_configs:
+                # Never hand a bare model name to faster-whisper: its own download ignores the
+                # mirror fallback and shows no status (RC156 Win QA #6). Download via the manager.
+                try:
+                    cached_model = manager.ensure_downloaded(config.model)
+                except Exception as exc:  # noqa: BLE001
+                    # 每个下载源的失败原因只进日志；界面文案不带异常名和原文（RC156 #11）。
+                    logger.warning("Whisper 模型 %s 下载失败: %s: %s", config.model, type(exc).__name__, exc)
+                    raise SpeechRecognitionError(
+                        f"Whisper 模型 {config.model} 下载失败。"
+                        "请检查网络后到「设置 → 转写」重新下载模型，或重新导入时带上 .srt 字幕。"
+                    ) from exc
             logger.info(
                 "使用 faster-whisper 生成字幕: model=%s lang=%s device=%s compute=%s",
                 config.model, language or "auto", device, compute_type,
@@ -466,19 +498,52 @@ class SpeechRecognizer:
 
             def load_model(use_device: str, use_compute: str):
                 return WhisperModel(
-                    config.model,
+                    str(cached_model) if cached_model else config.model,
                     device=use_device,
                     compute_type=use_compute,
                     download_root=models_dir,
+                    cpu_threads=min(2, os.cpu_count() or 1),
+                    num_workers=1,
                 )
 
+            audio_input = str(video_path)
+
             def transcribe(model, *, vad_filter: bool):
-                seg_iter, _info = model.transcribe(
-                    str(video_path), language=language, vad_filter=vad_filter, word_timestamps=True,
-                )
-                return ([{"start": s.start, "end": s.end, "text": s.text,
-                         "words": [{"text": w.word, "start": w.start, "end": w.end}
-                                   for w in (getattr(s, "words", None) or [])]} for s in seg_iter], _info)
+                nonlocal audio_input
+                try:
+                    seg_iter, _info = model.transcribe(
+                        audio_input, language=language, vad_filter=vad_filter, word_timestamps=True,
+                    )
+                except TypeError as exc:
+                    if 'metadata_errors' not in str(exc) or not isinstance(audio_input, str):
+                        raise
+                    # Existing installations may already contain PyAV 19. Decode
+                    # with the bundled ffmpeg instead; don't patch global av.open.
+                    import numpy as np
+                    decoded = subprocess.run(
+                        [get_ffmpeg_path(), '-nostdin', '-v', 'error', '-i', str(video_path),
+                         '-vn', '-ac', '1', '-ar', '16000', '-f', 's16le', '-'],
+                        capture_output=True, timeout=config.timeout or 300,
+                    )
+                    if decoded.returncode or not decoded.stdout:
+                        raise SpeechRecognitionError(
+                            "Whisper 无法解码视频音轨。请确认视频有可播放的人声，或导入 SRT 字幕。"
+                        ) from exc
+                    audio_input = np.frombuffer(decoded.stdout, np.int16).astype(np.float32) / 32768.0
+                    seg_iter, _info = model.transcribe(
+                        audio_input, language=language, vad_filter=vad_filter, word_timestamps=True,
+                    )
+                # faster-whisper decodes lazily: each segment is real progress through the audio (RC156 #14).
+                from backend.utils.transcription_progress import report
+                total = getattr(_info, "duration", None)
+                collected = []
+                for s in seg_iter:
+                    collected.append({"start": s.start, "end": s.end, "text": s.text,
+                                      "words": [{"text": w.word, "start": w.start, "end": w.end}
+                                                for w in (getattr(s, "words", None) or [])]})
+                    report(s.end, total)
+                report(total, total)
+                return (collected, _info)
 
             def transcribe_with_vad_fallback(model):
                 try:
@@ -749,9 +814,15 @@ def _stash_speech_api_key(config: SpeechRecognitionConfig, api_key: str) -> None
         config.custom_api_key = api_key
 
 
+def configured_whisper_model(fallback: str = 'base') -> str:
+    from backend.services.ai_model_settings import load
+    settings = load()
+    return settings.transcription.model if settings and settings.transcription and settings.transcription.provider == 'whisper_local' else fallback
+
+
 def generate_subtitle_for_video(video_path: Path, output_path: Optional[Path] = None, 
                                method: str = "auto", language: str = "auto", 
-                               model: str = "base", enable_fallback: bool = True,
+                               model: Optional[str] = None, enable_fallback: Optional[bool] = None,
                                enable_timestamps: bool = True,
                                enable_punctuation: bool = True,
                                enable_speaker_diarization: bool = False,
@@ -779,7 +850,26 @@ def generate_subtitle_for_video(video_path: Path, output_path: Optional[Path] = 
     Raises:
         SpeechRecognitionError: 语音识别失败
     """
+    # 没有音轨的视频交给 Whisper 会抛 IndexError（RC156 #11），交给云端是白传。先用 ffprobe 确认。
+    from backend.pipeline.media_precheck import NO_AUDIO_MESSAGE, has_audio
+    if has_audio(video_path) is False:
+        raise SpeechRecognitionError(NO_AUDIO_MESSAGE)
     # 创建配置。本地导入会带上设置里的时间戳 / 超时 / 密钥；缺了这些参数会在进 Whisper 之前 TypeError。
+    from backend.services.ai_model_settings import load as load_model_settings
+    model_settings = load_model_settings()
+    selection = model_settings.transcription if model_settings else None
+    if method == 'sensevoice_local' or method == 'auto' and selection and selection.provider == 'sensevoice_local':
+        from backend.services.sensevoice_runtime import transcribe
+        return transcribe(Path(video_path), output_path, language, timeout)
+    if method == 'auto' and selection and selection.provider == 'cloud':
+        from backend.services.cloud_transcription import transcribe
+        return transcribe(Path(video_path), output_path, model_settings, language, timeout)
+    local_selected = bool(selection and selection.provider == 'whisper_local')
+    if method == 'auto' and local_selected:
+        method = 'whisper_local'
+    if enable_fallback is None:
+        enable_fallback = not local_selected
+    model = model or configured_whisper_model()
     config = SpeechRecognitionConfig(
         method=SpeechRecognitionMethod(method) if method != "auto" else SpeechRecognitionMethod.WHISPER_LOCAL,
         language=LanguageCode(language),
@@ -853,4 +943,3 @@ def get_whisper_models() -> List[str]:
         Whisper模型列表
     """
     return ["tiny", "base", "small", "medium", "large"]
-

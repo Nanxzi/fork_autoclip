@@ -3,14 +3,17 @@ Step 2: 时间线提取 - 为大纲中的每个话题定位具体时间区间
 """
 import json
 import logging
+import math
 import re
 from typing import List, Dict, Any, Optional
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 # 导入依赖
 from ..utils.llm_client import LLMClient
 from ..utils.text_processor import TextProcessor
+from .quality import to_seconds, to_srt_time, save_report
+from .failures import PipelineFailure, http_status_of, model_call_error_code, timeline_failure_from_report
 from ..core.shared_config import PROMPT_FILES, METADATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -47,13 +50,22 @@ class TimelineExtractor:
         - 保存每个块的处理结果作为中间文件，增强健壮性
         """
         logger.info("开始提取话题时间区间...")
+        # Counts and stable codes only: safe to share without subtitles, keys or paths.
+        self.extraction_report = {"topics": len(outlines), "chunks": [], "parsed": 0, "output": 0}
+        # Clear this stage's previous-run result before any early failure.
+        save_report({"step2": {"input": 0, "output": 0, "dropped": [], "merged": [],
+                               "extended": 0, "trimmed": 0},
+                     "step2_extraction": self.extraction_report}, self.metadata_dir)
         
         if not outlines:
             logger.warning("大纲数据为空，无法提取时间线。")
+            save_report({"step2_extraction": self.extraction_report}, self.metadata_dir)
             return []
 
         if not self.srt_chunks_dir.exists():
             logger.error(f"SRT块目录不存在: {self.srt_chunks_dir}。请先运行Step 1。")
+            self.extraction_report["chunks"] = [{"outcome": "missing_subtitles"}]
+            save_report({"step2_extraction": self.extraction_report}, self.metadata_dir)
             return []
 
         # 1. 创建本步骤需要的目录
@@ -72,14 +84,24 @@ class TimelineExtractor:
             if chunk_index is not None:
                 outlines_by_chunk[chunk_index].append(outline)
             else:
+                self.extraction_report["chunks"].append({"outcome": "missing_subtitles", "topics": 1})
                 logger.warning(f"  > 话题 '{outline.get('title', '未知')}' 缺少 chunk_index，将被跳过。")
 
         all_timeline_data = []
-        # 3. 遍历每个块，批量处理，并将结果存为独立的JSON文件
-        for chunk_index, chunk_outlines in outlines_by_chunk.items():
+        current_srt_entries = []
+        # 3. 每个块独立调用模型（并行），结果按块顺序合并，并存为独立的JSON文件
+        import threading
+        from .concurrency import map_chunks
+        parse_lock = threading.Lock()
+
+        def timeline_chunk(item):
+            chunk_index, chunk_outlines = item
+            srt_entries, parsed = [], []
             logger.info(f"处理块 {chunk_index}，其中包含 {len(chunk_outlines)} 个话题...")
+            chunk_report = {"index": chunk_index, "topics": len(chunk_outlines),
+                            "attempts": 0, "outcome": "missing_subtitles"}
             
-            # 每次都重新处理，不使用缓存
+            # 结果文件只用于诊断；本次返回值仅由本次验证成功的块组成
             chunk_output_path = self.timeline_chunks_dir / f"chunk_{chunk_index}.json"
 
             try:
@@ -87,113 +109,95 @@ class TimelineExtractor:
                 srt_chunk_path = self.srt_chunks_dir / f"chunk_{chunk_index}.json"
                 if not srt_chunk_path.exists():
                     logger.warning(f"  > 找不到对应的SRT块文件: {srt_chunk_path}，跳过整个块。")
-                    continue
+                    return chunk_report, srt_entries, parsed
                 
                 with open(srt_chunk_path, 'r', encoding='utf-8') as f:
                     srt_chunk_data = json.load(f)
 
                 if not srt_chunk_data:
                     logger.warning(f"  > SRT块文件为空: {srt_chunk_path}，跳过整个块。")
-                    continue
+                    return chunk_report, srt_entries, parsed
 
                 # 获取时间范围信息
                 chunk_start_time = srt_chunk_data[0]['start_time']
                 chunk_end_time = srt_chunk_data[-1]['end_time']
 
-                raw_response = ""
+                srt_entries = srt_chunk_data
                 llm_cache_path = self.llm_raw_output_dir / f"chunk_{chunk_index}.txt"
-
-                if llm_cache_path.exists():
-                    logger.info(f"  > 找到块 {chunk_index} 的LLM原始响应缓存，直接读取。")
-                    with open(llm_cache_path, 'r', encoding='utf-8') as f:
-                        raw_response = f.read()
-                else:
-                    logger.info(f"  > 未找到LLM缓存，开始调用API...")
-                    
-                    # 构建用于LLM的SRT文本
-                    srt_text_for_prompt = ""
-                    for sub in srt_chunk_data:
-                        srt_text_for_prompt += f"{sub['index']}\\n{sub['start_time']} --> {sub['end_time']}\\n{sub['text']}\\n\\n"
-                    
-                    # 为LLM准备一个"干净"的输入，只包含它需要的信息
-                    llm_input_outlines = [
-                        {"title": o.get("title"), "subtopics": o.get("subtopics")}
-                        for o in chunk_outlines
-                    ]
-
-                    input_data = {
-                        "outline": llm_input_outlines,  # 使用干净的数据
-                        "srt_text": srt_text_for_prompt
-                    }
-                    
-                    # 调用LLM获取原始响应，带重试机制
-                    parsed_items = None
-                    max_parse_retries = 2
-                    
-                    for retry_count in range(max_parse_retries + 1):
-                        try:
-                            raw_response = self.llm_client.call_with_retry(timeline_prompt, input_data)
-                            
-                            if not raw_response:
-                                logger.warning(f"  > 块 {chunk_index} LLM响应为空，跳过")
+                cached = llm_cache_path.exists()
+                chunk_report["source"] = "cache" if cached else "model"
+                input_data = {
+                    "outline": [{"title": o.get("title"), "subtopics": o.get("subtopics")} for o in chunk_outlines],
+                    "srt_text": "\n\n".join(
+                        f"{sub['index']}\n{sub['start_time']} --> {sub['end_time']}\n{sub['text']}"
+                        for sub in srt_chunk_data
+                    ),
+                }
+                # Cache replay follows the same parser. An invalid cache is a
+                # failed chunk, never permission to silently make a paid call.
+                # invalid_response: first request + at most two retries.
+                from backend.core.result_retry import MAX_ATTEMPTS
+                attempts = 1 if cached else MAX_ATTEMPTS
+                for retry_count in range(attempts):
+                    raw_response = ""
+                    try:
+                        chunk_report["attempts"] += 1
+                        if cached:
+                            raw_response = llm_cache_path.read_text(encoding='utf-8')
+                        else:
+                            try:
+                                raw_response = self.llm_client.call_with_retry(timeline_prompt, input_data)
+                            except Exception as call_error:
+                                # The client already retries transport failures. Do not
+                                # multiply its request budget by the JSON repair loop.
+                                chunk_report.update(outcome="call_failed", error_code=model_call_error_code(call_error))
+                                if http_status_of(call_error) is not None:
+                                    chunk_report["http_status"] = http_status_of(call_error)
+                                logger.error("块 %s 模型调用失败: %s", chunk_index, call_error)
                                 break
-                            
-                            # 保存原始响应到缓存
-                            cache_file = self.llm_raw_output_dir / f"chunk_{chunk_index}_attempt_{retry_count}.txt"
-                            with open(cache_file, 'w', encoding='utf-8') as f:
-                                f.write(raw_response)
-                            
-                            # 解析LLM的原始响应
+                            if raw_response:
+                                cache_file = self.llm_raw_output_dir / f"chunk_{chunk_index}_attempt_{retry_count}.txt"
+                                cache_file.write_text(raw_response, encoding='utf-8')
+                        if not raw_response:
+                            chunk_report["outcome"] = "empty_response"
+                            logger.warning("块 %s 响应为空，跳过", chunk_index)
+                            break
+                        with parse_lock:  # the parser reports through instance state
                             parsed_items = self._parse_and_validate_response(
-                                raw_response, 
-                                chunk_start_time, 
-                                chunk_end_time,
-                                chunk_index
+                                raw_response, chunk_start_time, chunk_end_time, chunk_index
                             )
-                            
-                            if parsed_items:
-                                # 保存解析后的结果
-                                with open(chunk_output_path, 'w', encoding='utf-8') as f:
-                                    json.dump(parsed_items, f, ensure_ascii=False, indent=2)
-                                
-                                logger.info(f"  > 块 {chunk_index} 成功解析 {len(parsed_items)} 个时间段")
-                                break  # 成功解析，跳出重试循环
-                            else:
-                                if retry_count < max_parse_retries:
-                                    logger.warning(f"  > 块 {chunk_index} 解析失败，尝试重试 ({retry_count + 1}/{max_parse_retries + 1})")
-                                    # 在重试时强化提示词，强调JSON格式
-                                    input_data['additional_instruction'] = "\n\n【重要】输出要求：\n1. 必须以[开始，以]结束\n2. 使用英文双引号，不要使用中文引号\n3. 字符串中的引号必须转义为\\\"\n4. 不要添加任何解释文字或代码块标记\n5. 确保JSON格式完全正确"
-                                else:
-                                    logger.error(f"  > 块 {chunk_index} 经过 {max_parse_retries + 1} 次尝试仍然解析失败")
-                                    # 保存最后一次的原始响应以便调试
-                                    self._save_debug_response(raw_response, chunk_index, "final_parse_failure")
-                                    
-                        except Exception as parse_error:
-                            logger.error(f"  > 块 {chunk_index} 第 {retry_count + 1} 次尝试解析过程中发生异常: {parse_error}")
-                            if retry_count == max_parse_retries:
-                                # 保存原始响应以便调试
-                                self._save_debug_response(raw_response if 'raw_response' in locals() else "No response", chunk_index, "parse_exception")
-                            continue
-                    
-                    if not parsed_items:
-                         logger.warning(f"  > 块 {chunk_index} 最终解析失败，跳过")
-                         continue
+                            chunk_report.update(self._last_parse_diagnostics)
+                        if parsed_items:
+                            chunk_report["outcome"] = "parsed"
+                            chunk_output_path.write_text(
+                                json.dumps(parsed_items, ensure_ascii=False, indent=2), encoding='utf-8'
+                            )
+                            parsed = parsed_items
+                            break
+                        input_data['additional_instruction'] = (
+                            "仅返回有效 JSON 数组，使用英文双引号；起止时间必须引用当前字幕块，结束晚于开始。"
+                        )
+                    except Exception as parse_error:
+                        chunk_report["outcome"] = "chunk_error"
+                        logger.error("块 %s 第 %s 次解析失败: %s", chunk_index, retry_count + 1, parse_error)
+                    if retry_count == attempts - 1:
+                        self._save_debug_response(raw_response, chunk_index, "final_parse_failure")
+                        logger.warning("块 %s 无有效时间线%s", chunk_index, "（缓存无效）" if cached else "")
 
             except Exception as e:
+                chunk_report["outcome"] = "chunk_error"
                 logger.error(f"  > 处理块 {chunk_index} 时出错: {str(e)}")
-                continue
-        
-        # 4. 从所有中间文件中拼接最终结果
-        logger.info("所有块处理完毕，开始从中间文件拼接最终结果...")
-        all_timeline_data = []
-        chunk_files = sorted(self.timeline_chunks_dir.glob("*.json"))
-        for chunk_file in chunk_files:
-            with open(chunk_file, 'r', encoding='utf-8') as f:
-                chunk_data = json.load(f)
-                all_timeline_data.extend(chunk_data)
+                return chunk_report, srt_entries, parsed
+            return chunk_report, srt_entries, parsed
 
-        logger.info(f"成功从 {len(chunk_files)} 个块文件中加载了 {len(all_timeline_data)} 个话题。")
+        for chunk_report, srt_entries, parsed in map_chunks(timeline_chunk, outlines_by_chunk.items()):
+            self.extraction_report["chunks"].append(chunk_report)
+            current_srt_entries.extend(srt_entries)
+            all_timeline_data.extend(parsed)
         
+        logger.info("本次成功提取 %s 个话题。", len(all_timeline_data))
+        self.extraction_report["parsed"] = len(all_timeline_data)
+
         # 最终排序：在返回所有结果前，按开始时间进行全局排序
         if all_timeline_data:
             logger.info("按开始时间对所有话题进行最终排序...")
@@ -214,10 +218,13 @@ class TimelineExtractor:
         # 5. 程序化校正：对齐字幕边界 / 时长上下限 / 去重合并（docs/QUALITY_AND_PUBLISH_PLAN.md 线 1-B）
         if all_timeline_data:
             try:
-                from .quality import load_srt_chunks, refine_timeline, save_report
-                srt_entries = load_srt_chunks(self.metadata_dir)
+                from .quality import refine_timeline
+                srt_entries = sorted(current_srt_entries, key=lambda cue: to_seconds(cue["start_time"]))
                 refined, report = refine_timeline(all_timeline_data, srt_entries, profile)
                 save_report({"step2": report}, self.metadata_dir)
+                self.extraction_report["minimum_seconds"] = report["profile"]["min_clip_sec"]
+                self.extraction_report["total_seconds"] = report["profile"]["total_sec"]
+                self.extraction_report["filtered"] = len(report["dropped"])
                 logger.info(
                     f"时间线校正: {report['input']} → {report['output']} 段，"
                     f"合并 {len(report['merged'])}，丢弃 {len(report['dropped'])}，"
@@ -226,13 +233,21 @@ class TimelineExtractor:
                 )
                 all_timeline_data = refined
             except Exception as e:  # noqa: BLE001
-                logger.error(f"时间线校正失败，沿用原始结果: {e}")
+                logger.error("时间线校正失败: %s", e)
+                self.extraction_report["refinement_failed"] = True
+                save_report({"step2_extraction": self.extraction_report}, self.metadata_dir)
+                raise PipelineFailure("ANALYZE", "时间线字幕边界校正失败，本次未导出未经校验的片段。",
+                                      "原素材已保留，请提交失败阶段反馈以便排查。", code="unexpected") from e
 
+        self.extraction_report["output"] = len(all_timeline_data)
+        save_report({"step2_extraction": self.extraction_report}, self.metadata_dir)
         return all_timeline_data
         
     def _parse_and_validate_response(self, response: str, chunk_start: str, chunk_end: str, chunk_index: int) -> List[Dict]:
         """增强的解析LLM的批量响应、验证并调整时间"""
         validated_items = []
+        reasons = Counter()
+        self._last_parse_diagnostics = {"outcome": "invalid_response", "rejected": reasons}
         
         # 保存原始响应用于调试
         self._save_debug_response(response, chunk_index, "original_response")
@@ -240,20 +255,35 @@ class TimelineExtractor:
         try:
             # 尝试解析JSON
             parsed_response = self.llm_client.parse_json_response(response)
-            
-            # 验证JSON结构
-            if not self.llm_client._validate_json_structure(parsed_response):
-                logger.error(f"  > 块 {chunk_index} JSON结构验证失败")
-                self._save_debug_response(str(parsed_response), chunk_index, "invalid_structure")
-                return []
+            # Compatible endpoints sometimes retain the input envelope or omit
+            # the array around one topic. Accept only unambiguous known shapes.
+            if isinstance(parsed_response, dict):
+                arrays = [parsed_response[key] for key in ("timeline", "outline")
+                          if isinstance(parsed_response.get(key), list)]
+                if len(arrays) == 1:
+                    parsed_response = arrays[0]
+                elif not arrays and all(key in parsed_response for key in ("start_time", "end_time")):
+                    parsed_response = [parsed_response]
             
             if not isinstance(parsed_response, list):
+                reasons["invalid_container"] += 1
                 logger.warning(f"  > 块 {chunk_index} LLM返回的不是一个列表")
                 self._save_debug_response(f"类型: {type(parsed_response)}, 内容: {parsed_response}", chunk_index, "not_list")
                 return []
+            self._last_parse_diagnostics["outcome"] = "no_valid_ranges"
+            if not parsed_response:
+                reasons["empty_array"] += 1
             
-            for timeline_item in parsed_response:
+            for raw_item in parsed_response:
+                if not isinstance(raw_item, dict):
+                    reasons["non_object"] += 1
+                    continue
+                timeline_item = dict(raw_item)
+                # Some models preserve the input title instead of renaming it.
+                if 'outline' not in timeline_item and isinstance(timeline_item.get('title'), str):
+                    timeline_item['outline'] = timeline_item['title']
                 if 'outline' not in timeline_item or 'start_time' not in timeline_item or 'end_time' not in timeline_item:
+                    reasons["missing_fields"] += 1
                     logger.warning(f"  > 从LLM返回的某个JSON对象格式不正确: {timeline_item}")
                     continue
                 
@@ -264,38 +294,41 @@ class TimelineExtractor:
                 try:
                     # 验证时间格式
                     if not self._validate_time_format(timeline_item['start_time']):
+                        reasons["invalid_time"] += 1
                         logger.warning(f"  > 话题 '{timeline_item['outline']}' 开始时间格式不正确: {timeline_item['start_time']}")
                         continue
                     
                     if not self._validate_time_format(timeline_item['end_time']):
+                        reasons["invalid_time"] += 1
                         logger.warning(f"  > 话题 '{timeline_item['outline']}' 结束时间格式不正确: {timeline_item['end_time']}")
                         continue
                     
-                    start_time = self._convert_time_format(timeline_item['start_time'])
-                    end_time = self._convert_time_format(timeline_item['end_time'])
-                    
-                    start_sec = self.text_processor.time_to_seconds(start_time)
-                    end_sec = self.text_processor.time_to_seconds(end_time)
-                    chunk_start_sec = self.text_processor.time_to_seconds(chunk_start)
-                    chunk_end_sec = self.text_processor.time_to_seconds(chunk_end)
-                    
-                    if start_sec < chunk_start_sec:
-                        logger.warning(f"  > 调整话题 '{timeline_item['outline']}' 的开始时间从 {start_time} 到 {chunk_start}")
-                        timeline_item['start_time'] = chunk_start
-                    
-                    if end_sec > chunk_end_sec:
-                        logger.warning(f"  > 调整话题 '{timeline_item['outline']}' 的结束时间从 {end_time} 到 {chunk_end}")
-                        timeline_item['end_time'] = chunk_end
-                    
+                    start_sec = self._timeline_seconds(timeline_item['start_time'])
+                    end_sec = self._timeline_seconds(timeline_item['end_time'])
+                    chunk_start_sec = to_seconds(chunk_start)
+                    chunk_end_sec = to_seconds(chunk_end)
+                    start_sec = max(start_sec, chunk_start_sec)
+                    end_sec = min(end_sec, chunk_end_sec)
+                    if end_sec <= start_sec:
+                        reasons["outside_chunk_or_reversed"] += 1
+                        logger.warning("  > 时间区间倒序或不在当前字幕块内，跳过: %s", timeline_item)
+                        continue
+                    # Normalize before downstream sorting: .5 means half a second,
+                    # not five milliseconds, and MM:SS must gain the hours field.
+                    timeline_item['start_time'] = to_srt_time(start_sec)
+                    timeline_item['end_time'] = to_srt_time(end_sec)
+
                     logger.info(f"  > 定位成功: {timeline_item['outline']} ({timeline_item['start_time']} -> {timeline_item['end_time']})")
                     validated_items.append(timeline_item)
                 except Exception as e:
+                    reasons["invalid_time"] += 1
                     logger.error(f"  > 验证单个时间戳时出错: {e} - 项目: {timeline_item}")
                     continue
             
             return validated_items
 
         except Exception as e:
+            reasons["malformed_json"] += 1
             logger.error(f"  > 块 {chunk_index} 解析LLM响应时出错: {e}")
             # 保存详细的错误信息
             error_info = {
@@ -311,13 +344,35 @@ class TimelineExtractor:
             self._save_debug_response(json.dumps(error_info, indent=2, ensure_ascii=False), chunk_index, "parse_error")
             return []
 
-    def _validate_time_format(self, time_str: str) -> bool:
-        """
-        验证时间格式是否正确 (HH:MM:SS,mmm)
-        """
-        pattern = r'^\d{2}:\d{2}:\d{2},\d{3}$'
-        return bool(re.match(pattern, time_str))
-    
+    @staticmethod
+    def _timeline_seconds(value: Any) -> float:
+        if isinstance(value, bool):
+            raise ValueError("boolean is not a timestamp")
+        if isinstance(value, (int, float)):
+            result = float(value)
+        elif isinstance(value, str):
+            value = value.strip()
+            if re.fullmatch(r'\d+(?:[.,]\d{1,3})?', value):
+                result = float(value.replace(',', '.'))
+            elif re.fullmatch(r'\d+:[0-5]\d(?:[,.]\d{1,3})?', value):
+                result = to_seconds(value)
+            elif re.fullmatch(r'\d+:[0-5]\d:[0-5]\d(?:[,.]\d{1,3})?', value):
+                result = to_seconds(value)
+            else:
+                raise ValueError("invalid timestamp")
+        else:
+            raise ValueError("invalid timestamp type")
+        if not math.isfinite(result) or result < 0:
+            raise ValueError("invalid timestamp range")
+        return result
+
+    def _validate_time_format(self, time_str: Any) -> bool:
+        try:
+            self._timeline_seconds(time_str)
+            return True
+        except (ValueError, TypeError):
+            return False
+
     def _convert_time_format(self, time_str: str) -> str:
         """
         转换时间格式：SRT格式 -> FFmpeg格式
@@ -372,13 +427,23 @@ def run_step2_timeline(outline_path: Path, metadata_dir: Path = None, output_pat
     # 加载大纲
     with open(outline_path, 'r', encoding='utf-8') as f:
         outlines = json.load(f)
-        
-    timeline_data = extractor.extract_timeline(outlines)
-    
-    # 保存结果
+
+    from backend.core.result_retry import MAX_ATTEMPTS, classify_for_retry
+
     if output_path is None:
         output_path = metadata_dir / "step2_timeline.json"
-        
-    extractor.save_timeline(timeline_data, output_path)
-    
-    return timeline_data
+
+    last_failure = None
+    for attempt in range(MAX_ATTEMPTS):
+        timeline_data = extractor.extract_timeline(outlines)
+        extractor.save_timeline(timeline_data, output_path)
+        if timeline_data:
+            return timeline_data
+        last_failure = timeline_failure_from_report(len(outlines), extractor.extraction_report)
+        kind, retryable = classify_for_retry(last_failure)
+        # invalid_response already used its budget in the per-chunk JSON loop.
+        if kind != "timeline_empty" or not retryable or attempt >= MAX_ATTEMPTS - 1:
+            raise last_failure
+        for cached in extractor.llm_raw_output_dir.glob("chunk_*.txt"):
+            cached.unlink(missing_ok=True)
+    raise last_failure

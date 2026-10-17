@@ -35,17 +35,21 @@ from backend.core.desktop_config import (
 )
 
 class DesktopServiceManager:
-    """桌面服务管理器，统一管理FastAPI和Celery服务"""
+    """桌面服务管理器。Studio 在本进程线程池执行，不再拉起 Celery。"""
     
     def __init__(self):
         self.config = get_desktop_config()
         self.app: Optional[FastAPI] = None
         self.celery_app = None
         self.celery_worker = None
+        self.celery_worker_process = None
+        self.celery_worker_thread = None
         self.server_thread: Optional[threading.Thread] = None
         self.is_running = False
         self.start_time: Optional[float] = None
         self.actual_port: Optional[int] = None
+        self.server: Optional[uvicorn.Server] = None
+        self.parent_watch: Optional[threading.Thread] = None
         
         # 确保目录存在
         if not ensure_desktop_directories():
@@ -85,44 +89,10 @@ class DesktopServiceManager:
         return app
     
     def _start_celery_worker(self):
-        """启动Celery Worker"""
-        try:
-            from backend.desktop_celery import celery_app
-            import subprocess
-            import os
-            
-            self.celery_app = celery_app
-
-            if getattr(sys, "frozen", False):
-                def run_worker():
-                    celery_app.worker_main([
-                        "worker",
-                        "--loglevel=" + self.config.log_level.lower(),
-                        "--concurrency=1",
-                        "--pool=solo",
-                    ])
-
-                self.celery_worker_thread = threading.Thread(
-                    target=run_worker,
-                    daemon=True,
-                )
-                self.celery_worker_thread.start()
-                self.logger.info("✅ Celery Worker 以冻结运行时线程模式启动成功")
-                return
-            
-            # 使用subprocess启动Celery Worker，避免信号处理冲突
-            self.celery_worker_process = subprocess.Popen([
-                sys.executable, '-m', 'celery', '-A', 'backend.desktop_celery', 'worker',
-                '--loglevel=' + self.config.log_level.lower(),
-                '--concurrency=' + str(self.config.celery_worker_concurrency),
-                '--quiet=False'
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "AUTOCLIP_DESKTOP_MODE": "true", "AUTOCLIP_MODE": "desktop"})
-            
-            self.logger.info("✅ Celery Worker 启动成功")
-            
-        except Exception as e:
-            self.logger.error(f"❌ Celery Worker 启动失败: {e}")
-            raise
+        """桌面版不启动 Celery。Docker / 脚本模式仍用独立 worker。"""
+        self.celery_app = None
+        self.celery_worker = None
+        self.logger.info("桌面模式不启动 Celery；Studio 任务在本进程线程池执行")
     
     def _start_fastapi_server(self):
         """启动FastAPI服务器"""
@@ -141,6 +111,7 @@ class DesktopServiceManager:
                 access_log=False
             )
             server = uvicorn.Server(config)
+            self.server = server
 
             # 输出端口信息到 stdout（供 Rust 读取）
             print(f"PORT={self.actual_port}", flush=True)
@@ -176,10 +147,8 @@ class DesktopServiceManager:
             
             # 创建FastAPI应用
             self.app = self._create_fastapi_app()
-            
-            # 启动Celery Worker
-            self._start_celery_worker()
-            
+
+            # Studio renders in-process. Do not start a desktop Celery worker.
             self.is_running = True
 
             # 启动FastAPI服务器
@@ -239,6 +208,39 @@ class DesktopServiceManager:
         except Exception as e:
             self.logger.error(f"❌ 停止服务失败: {e}")
     
+    def shutdown_for_lost_parent(self, parent_pid: int, *, exit=os._exit, grace: float = 5.0) -> None:
+        """The desktop app died without stopping us (kill -9, crash; RC156 #20): exit cleanly.
+
+        - children first (ffmpeg, Whisper/SenseVoice runtimes) so nothing keeps encoding or holding files;
+        - uvicorn stops accepting requests and finishes the ones in flight (bounded by `grace`);
+        - pooled SQLite connections are closed; studio.json writes are atomic (temp file + replace)
+          and interrupted generations are settled by restart recovery on the next launch;
+        - then the process exits, without waiting for pipeline worker threads that may be in a
+          minutes-long model call.
+        """
+        from backend.core import parent_watch
+        from backend.core import project_cancellation
+        project_cancellation.begin_shutdown()
+        self.logger.warning('🛑 桌面应用 (pid %s) 已退出，后端随之关闭', parent_pid)
+        try:
+            killed = parent_watch.terminate_children()
+            if killed:
+                self.logger.info('已结束 %d 个子进程', killed)
+        except Exception as error:  # noqa: BLE001 - keep going: exiting matters more
+            self.logger.warning('结束子进程失败: %s', type(error).__name__)
+        if self.server is not None:
+            self.server.should_exit = True
+        if self.server_thread and self.server_thread.is_alive():
+            self.server_thread.join(timeout=grace)
+        try:
+            from backend.core.database import engine
+            engine.dispose()
+        except Exception as error:  # noqa: BLE001
+            self.logger.warning('关闭数据库连接失败: %s', type(error).__name__)
+        self.is_running = False
+        logging.shutdown()
+        exit(0)
+
     def get_status(self) -> Dict[str, Any]:
         """获取服务状态"""
         return {
@@ -321,10 +323,16 @@ def main():
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+    # pip children never outlive the backend (registry + atexit + chained SIGTERM/SIGINT).
+    from backend.services import child_guard
+    child_guard.install_hooks()
     
     try:
         # 启动服务
         manager.start()
+        # Launched by the desktop shell: exit with it even after kill -9 / a crash (RC156 #20).
+        from backend.core import parent_watch
+        manager.parent_watch = parent_watch.start(manager.shutdown_for_lost_parent)
         
         # 保持主线程运行
         while manager.is_running:

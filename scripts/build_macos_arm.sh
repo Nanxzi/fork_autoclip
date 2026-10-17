@@ -25,7 +25,9 @@ check_build_tools
 prepare_portable_python
 install_backend_deps
 copy_backend_source
+prepare_optional_runtime_wheels
 verify_backend_deps
+verify_playwright_bundled
 
 # ---- ffmpeg ----
 # We bundle STATIC, self-contained ffmpeg + ffprobe (arm64). Do NOT copy the

@@ -14,6 +14,7 @@ from backend.services.websocket_notification_service import notification_service
 from backend.services.processing_service import ProcessingService
 from backend.services.pipeline_adapter import create_pipeline_adapter
 from backend.core.database import SessionLocal, session_scope
+from backend.core.project_cancellation import ProjectDeleted
 from backend.models.project import Project, ProjectStatus
 from backend.models.task import Task, TaskStatus, TaskType
 from datetime import datetime
@@ -67,6 +68,7 @@ def process_video_pipeline(
     project_id: str,
     input_video_path: str,
     input_srt_path: Optional[str] = None,
+    clips_only: bool = False,
 ) -> Dict[str, Any]:
     """
     处理视频流水线任务 - 使用Pipeline适配器
@@ -127,14 +129,20 @@ def process_video_pipeline(
 
         # 执行Pipeline处理 - 使用异步包装器
         import asyncio
-        result = asyncio.run(pipeline_adapter.process_project_sync(input_video_path, input_srt_path))
+        from backend.core.project_cancellation import bind, checkpoint
+        with bind(project_id):
+            result = asyncio.run(pipeline_adapter.process_project_sync(input_video_path, input_srt_path, clips_only=clips_only))
+            # 运行中项目被删除（RC156 #12）：无论适配器把它收成了什么结果，都在这里停下，不再写库/写文件
+            checkpoint(project_id)
 
         with session_scope() as db:
             task = db.query(Task).filter(Task.id == task_row_id).first()
             project = db.query(Project).filter(Project.id == project_id).first()
             # 检查处理结果
             if result.get("status") == "failed":
-                # 处理失败。adapter 返回的是 error（以前这里只读 message，用户看到的永远是「处理失败」四个字）
+                # 处理失败。adapter 返回的是 error（以前这里只读 message，用户看到的永远是「处理失败」四个字）。
+                # stage / error_code / http_status 原样留在 outcome["result"] 里，Studio 的 run_content 靠它们
+                # 还原 PipelineFailure（apply().get() 拿到的是 dict，异常链已经断了，RC156 Win QA #1）。
                 error_msg = result.get("error") or result.get("message") or "处理失败"
                 if task:
                     task.status = TaskStatus.FAILED
@@ -143,7 +151,7 @@ def process_video_pipeline(
                         task.current_step = f"失败于 {result['stage']}"
                     task.result_data = result
 
-                if project:
+                if project and not clips_only:
                     project.status = ProjectStatus.FAILED
                     project.updated_at = datetime.utcnow()
                     logger.info(f"项目状态已更新为失败: {project_id}")
@@ -172,7 +180,10 @@ def process_video_pipeline(
                     task.current_step = "处理完成"
                     task.result_data = result
 
-                if project:
+                # clips_only 是 Studio 托管的子运行：片段出来后还要渲染成片。项目终态由 Studio
+                # （mark_project / sync_project_completion）按 generation 写，这里写 completed
+                # 会让首页在成片出来前就显示「已完成」并停止轮询（RC156 Win QA #8）。
+                if project and not clips_only:
                     project.status = ProjectStatus.COMPLETED
                     project.completed_at = datetime.utcnow()
                     project.updated_at = datetime.utcnow()
@@ -197,6 +208,9 @@ def process_video_pipeline(
                 }
         return outcome
 
+    except ProjectDeleted:
+        logger.info("项目已删除，流水线已停止: %s", project_id)
+        raise
     except Exception as e:
         error_msg = f"视频流水线处理失败: {str(e)}"
         logger.error(error_msg)
@@ -209,9 +223,9 @@ def process_video_pipeline(
                     task.status = TaskStatus.FAILED
                     task.error_message = error_msg
 
-                    # 更新项目状态为失败
+                    # 更新项目状态为失败（Studio 子运行由 Studio 自己写终态）
                     project = db.query(Project).filter(Project.id == project_id).first()
-                    if project:
+                    if project and not clips_only:
                         project.status = ProjectStatus.FAILED
                         project.updated_at = datetime.utcnow()
                         logger.info(f"项目状态已更新为失败: {project_id}")

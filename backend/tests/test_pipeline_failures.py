@@ -69,7 +69,7 @@ def test_step1_all_chunks_failing_surfaces_llm_error(tmp_path, prompt_files, mon
 
     assert exc.value.stage == "ANALYZE"
     assert "1/1" in exc.value.message
-    assert "未配置LLM提供商" in exc.value.message
+    assert "未配置LLM提供商" not in exc.value.message  # provider/raw text is logged, never shown (RC156 c5)
     assert exc.value.code == "llm_not_configured"
     assert "自备" in exc.value.hint
     assert "设置 → 模型" in exc.value.hint
@@ -79,13 +79,31 @@ def test_step1_all_chunks_failing_surfaces_llm_error(tmp_path, prompt_files, mon
 def test_step1_unparseable_response_is_a_failure_not_empty_list(tmp_path, prompt_files, monkeypatch):
     srt = tmp_path / "a.srt"
     srt.write_text(SRT, encoding="utf-8")
-    extractor = _extractor(tmp_path, prompt_files, monkeypatch, ["抱歉，我无法完成这个任务。"])
+    extractor = _extractor(tmp_path, prompt_files, monkeypatch, ["抱歉，我无法完成这个任务。"] * 3)
 
     with pytest.raises(PipelineFailure) as exc:
         extractor.extract_outline(srt)
 
     assert exc.value.stage == "ANALYZE"
     assert "无法解析" in exc.value.message
+    assert exc.value.code == "invalid_response"
+
+
+@pytest.mark.parametrize('error, expected_code', [
+    (RuntimeError('HTTP 429'), 'rate_limited'),
+    (RuntimeError('HTTP 500'), 'provider_error'),
+    (TimeoutError('synthetic timeout'), 'timeout'),
+    (ConnectionError('synthetic offline'), 'connection'),
+])
+def test_outline_provider_failure_retains_recoverable_code(tmp_path, prompt_files, monkeypatch, error, expected_code):
+    srt = tmp_path / 'input.srt'
+    srt.write_text(SRT, encoding='utf-8')
+    extractor = _extractor(tmp_path, prompt_files, monkeypatch, [error])
+    with pytest.raises(PipelineFailure) as caught:
+        extractor.extract_outline(srt)
+    assert caught.value.stage == 'ANALYZE'
+    assert caught.value.code == expected_code
+    assert caught.value.__cause__ is error
 
 
 def test_step1_partial_chunk_failure_still_returns_outline(tmp_path, prompt_files, monkeypatch):
@@ -317,6 +335,44 @@ def test_adapter_fails_when_ffmpeg_produced_no_clip(adapter, monkeypatch, tmp_pa
     assert "ffmpeg" in result["error"]
 
 
+def test_fast_output_skips_clustering_and_clip_encoding(adapter, monkeypatch, tmp_path):
+    import pytest
+    from backend.services import simple_pipeline_adapter as mod
+
+    _fake_manager(monkeypatch, available=True)
+    srt = tmp_path / "in.srt"
+    srt.write_text(SRT, encoding="utf-8")
+    monkeypatch.setattr(mod, "run_step1_outline", lambda *a, **k: [{"title": "t"}])
+    monkeypatch.setattr(mod, "run_step2_timeline", lambda *a, **k: [{"id": 1}])
+    monkeypatch.setattr(mod, "run_step3_scoring", lambda *a, **k: [{"id": 1, "final_score": 0.9}])
+    monkeypatch.setattr(mod, "run_step4_title", lambda *a, **k: [{"id": 1, "generated_title": "x"}])
+    monkeypatch.setattr(mod, "run_step5_clustering", lambda *a, **k: pytest.fail("studio never reads collections"))
+    monkeypatch.setattr(mod, "run_step6_video", lambda *a, **k: pytest.fail("studio renders from the source"))
+    monkeypatch.setattr(mod.SimplePipelineAdapter, "_find_clips_in_one_pass", lambda *a: None)  # one pass unavailable: legacy steps
+
+    result = asyncio.run(adapter.process_project_sync(str(tmp_path / "in.mp4"), str(srt), clips_only=True))
+
+    assert result["status"] == "succeeded"
+    assert result["result"]["titled_clips"] == [{"id": 1, "generated_title": "x"}]
+
+
+def test_fast_output_uses_the_one_pass_clip_finder_when_it_works(adapter, monkeypatch, tmp_path):
+    import pytest
+    from backend.services import simple_pipeline_adapter as mod
+
+    _fake_manager(monkeypatch, available=True)
+    srt = tmp_path / "in.srt"
+    srt.write_text(SRT, encoding="utf-8")
+    for step in ("run_step1_outline", "run_step2_timeline", "run_step3_scoring", "run_step4_title"):
+        monkeypatch.setattr(mod, step, lambda *a, **k: pytest.fail("the one pass replaces the four legacy steps"))
+    clips = [{"id": "1", "generated_title": "一次挑片", "start_time": "00:00:01,000", "end_time": "00:01:40,000"}]
+    monkeypatch.setattr(mod.SimplePipelineAdapter, "_find_clips_in_one_pass", lambda *a: clips)
+
+    result = asyncio.run(adapter.process_project_sync(str(tmp_path / "in.mp4"), str(srt), clips_only=True))
+
+    assert result["status"] == "succeeded" and result["result"]["titled_clips"] == clips
+
+
 def test_adapter_happy_path_still_succeeds(adapter, monkeypatch, tmp_path):
     from backend.services import simple_pipeline_adapter as mod
 
@@ -439,3 +495,64 @@ def test_processing_task_reads_error_field_from_adapter_result():
     """tasks/processing.py 以前只读 message，adapter 返回的是 error → 用户永远只看到「处理失败」"""
     src = (Path(__file__).resolve().parents[1] / "tasks" / "processing.py").read_text(encoding="utf-8")
     assert 'result.get("error") or result.get("message")' in src
+
+
+class _ProviderStatusError(Exception):
+    """Mimics openai.InternalServerError (status_code=500) raised by the LLM client."""
+
+    def __init__(self, status_code):
+        super().__init__(f"Error code: {status_code} - private provider body")
+        self.status_code = status_code
+
+
+def test_step1_provider_500_reaches_failure_context_http_status(tmp_path, prompt_files, monkeypatch):
+    # RC156 Win QA #1: analysis 500 recorded failure_stage=analyze but http_status=null.
+    from backend.core.sentry_setup import studio_error_code, studio_failure_context
+
+    srt = tmp_path / "in.srt"
+    srt.write_text(SRT, encoding="utf-8")
+    extractor = _extractor(tmp_path, prompt_files, monkeypatch, [_ProviderStatusError(500)] * 8)
+
+    with pytest.raises(PipelineFailure) as exc:
+        extractor.extract_outline(srt)
+
+    assert exc.value.stage == "ANALYZE"
+    assert studio_error_code(exc.value) == "provider_error"
+    assert studio_failure_context(exc.value, "production") == {"failure_stage": "analyze", "http_status": 500, "upstream_error_type": "upstream_unavailable"}
+
+
+def test_timeline_call_failure_report_carries_http_status():
+    # The timeline stage aggregates chunk reports and has no exception chain to walk.
+    from backend.core.sentry_setup import studio_failure_context
+    from backend.pipeline.failures import timeline_failure_from_report
+
+    report = {"parsed": 0, "chunks": [
+        {"outcome": "call_failed", "error_code": "provider_error", "http_status": 503},
+    ]}
+    failure = timeline_failure_from_report(2, report)
+    assert failure.code == "provider_error"
+    assert studio_failure_context(failure, "production") == {"failure_stage": "analyze", "http_status": 503, "upstream_error_type": "upstream_unavailable"}
+
+    no_status = timeline_failure_from_report(2, {"parsed": 0, "chunks": [
+        {"outcome": "call_failed", "error_code": "connection"},
+    ]})
+    assert studio_failure_context(no_status, "production") == {"failure_stage": "analyze"}
+
+
+@pytest.mark.parametrize('error, code', [
+    (ConnectionError('Connection error.'), 'connection'),
+    (TimeoutError('Request timed out.'), 'timeout'),
+    (type('RateLimitError', (Exception,), {'status_code': 429})('Error code: 429 - rate limit'), 'rate_limited'),
+])
+def test_offline_failure_shows_one_fixed_translatable_sentence(tmp_path, prompt_files, monkeypatch, caplog, error, code):
+    """RC156 Win QA c5: 「无法连接模型服务…」 used to end with the provider's English 「Connection error.」."""
+    from backend.pipeline.failures import MODEL_CALL_MESSAGES
+    srt = tmp_path / 'input.srt'
+    srt.write_text(SRT, encoding='utf-8')
+    extractor = _extractor(tmp_path, prompt_files, monkeypatch, [error])
+    with pytest.raises(PipelineFailure) as caught:
+        extractor.extract_outline(srt)
+    assert caught.value.code == code
+    assert caught.value.user_message() == MODEL_CALL_MESSAGES[code]
+    assert str(error) not in caught.value.user_message()
+    assert str(error) in caplog.text  # detail kept in the log

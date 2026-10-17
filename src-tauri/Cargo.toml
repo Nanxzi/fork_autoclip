@@ -1,6 +1,6 @@
 [package]
 name = "autoclip-desktop"
-version = "1.4.0"
+version = "1.5.7"
 description = "AutoClip Desktop Application"
 authors = ["AutoClip Team"]
 license = "MIT"
@@ -20,6 +20,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+dirs = "6"
 tokio = { version = "1.0", features = ["full"] }
 reqwest = { version = "0.11", features = ["json"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -28,3 +29,6 @@ chrono = { version = "0.4", features = ["serde"] }
 # this feature is used for production builds or when `devPath` points to the filesystem
 # DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.0", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }

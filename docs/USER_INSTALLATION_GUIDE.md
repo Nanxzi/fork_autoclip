@@ -58,14 +58,14 @@ AutoClip 不托管官方样片。Release 里没有样片压缩包，也不提供
 | 方式 | 准备事项 |
 | --- | --- |
 | 云端 API | 服务商账号、可用 API Key、对应的模型访问权限与网络；调用费用由服务商收取 |
-| Ollama | 启动 Ollama，运行 `ollama pull qwen2.5:7b`，在 AutoClip 选择 Ollama |
-| LM Studio | 下载并加载模型，启动 Local Server，再在 AutoClip 选择实际可用的模型 |
+| Ollama | 启动 Ollama，运行 `ollama pull qwen2.5:7b`，在 AutoClip 选择 Ollama；长视频请把上下文调到 16384 以上（`OLLAMA_CONTEXT_LENGTH` 或 `num_ctx`） |
+| LM Studio | 下载并加载模型，启动 Local Server，再在 AutoClip 选择实际可用的模型；长视频请在加载模型时把 Context Length 调到 16384 以上 |
 
 本地预设不需要云端 API Key；本地硬件仍需承担推理开销。Whisper 负责语音转文字。字幕路线用语言模型分析字幕或文案；视觉路线另需多模态模型，并显式启用后才会发送抽样画面。二者都要单独配置。
 
 ## 更新与备份
 
-关闭正在处理的任务并退出应用，备份数据目录后，从 [Releases](https://github.com/zhouxiaoka/autoclip/releases/latest) 获取新版安装包。v1.3.0 及以前需先手动安装 v1.3.1。自 v1.3.1 起，可在「设置 → 应用 → 检查更新」获取后续版本；确认后下载安装并重启。自动检查最多每天一次，手动下载仍然可用。
+关闭正在处理的任务并退出应用，备份数据目录后，从 [Releases](https://github.com/zhouxiaoka/autoclip/releases/latest) 获取新版安装包。v1.3.0 及以前需先手动安装 v1.3.1。自 v1.3.1 起，可在「设置 → 应用 → 检查更新」获取后续版本；确认后下载安装并重启。启动时自动检查同一版本一天最多提醒一次，可在设置或提醒弹层关闭；关闭后仍可手动检查。
 
 默认桌面数据目录：
 
@@ -75,7 +75,7 @@ AutoClip 不托管官方样片。Release 里没有样片压缩包，也不提供
 | Windows | `%APPDATA%\AutoClip` |
 | Linux / CLI | `~/.local/share/AutoClip` |
 
-使用 CLI 自定义 `--data-dir` / `AUTOCLIP_DATA_DIR` 时，以实际配置目录为准。日志通常在数据目录的 `logs` 中。备份应同时包含项目文件、数据库和配置；这些配置可能含 API Key，应妥善保存。不要把卸载、删除数据库或清空数据目录作为常规排错步骤，也不要假设已有自动备份。
+使用 CLI 自定义 `--data-dir` / `AUTOCLIP_DATA_DIR` 时，以实际配置目录为准。日志通常在数据目录的 `logs` 中。备份应同时包含项目文件、数据库和配置；这些配置可能含 API Key，应妥善保存。不要把卸载、删除数据库或清空数据目录作为常规排错步骤，也不要假设已有自动备份。Windows 卸载默认保留数据目录；只有在卸载界面勾选「同时删除 AutoClip 数据（项目、设置、API 密钥）」才会删除 `%APPDATA%\AutoClip`，升级安装从不删除。
 
 ## 获取帮助
 

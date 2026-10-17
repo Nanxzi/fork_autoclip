@@ -59,7 +59,7 @@ def test_refinement_targets_ranked_gameplay_not_first_menu(monkeypatch):
     monkeypatch.setattr(vision,'sample',lambda v,t,p: calls.append(t) or [])
     responses=iter([{'events':[candidate(0,'menu',99),candidate(2,score=40),candidate(5,score=90)]},
                     {'events':[candidate(5,score=90)]}])
-    monkeypatch.setattr(vision,'vision_call',lambda _: next(responses))
+    monkeypatch.setattr(vision,'vision_call',lambda _, **_kwargs: next(responses))
     found,coverage=vision.analyze(Path('unused'),Preferences(goal='highlight'))
     assert [s.id for s in found]==['e5','e2']
     assert min(calls[1])==48 and max(calls[1])==57
@@ -72,7 +72,7 @@ def test_dense_non_play_correction_preserves_other_independent_events(monkeypatc
     monkeypatch.setattr(vision,'sample',lambda *a: [])
     responses=iter([{'events':[candidate(2,score=90),candidate(5,score=60)]},
                     {'events':[candidate(2,'reward_screen',10)]}])
-    monkeypatch.setattr(vision,'vision_call',lambda _: next(responses))
+    monkeypatch.setattr(vision,'vision_call',lambda _, **_kwargs: next(responses))
     found,coverage=vision.analyze(Path('unused'),Preferences(goal='highlight'))
     assert [s.id for s in found]==['e5']
     assert coverage['selection'][0]['disposition']=='refine_filtered'
@@ -83,7 +83,7 @@ def test_dense_rejection_of_only_candidate_reports_no_highlight(monkeypatch):
     monkeypatch.setattr(vision,'_probe',lambda _: {'duration':100})
     monkeypatch.setattr(vision,'sample',lambda *a: [])
     responses=iter([{'events':[candidate(2)]},{'events':[candidate(2,'menu')]}])
-    monkeypatch.setattr(vision,'vision_call',lambda _: next(responses))
+    monkeypatch.setattr(vision,'vision_call',lambda _, **_kwargs: next(responses))
     with pytest.raises(ValueError,match='没有找到可用玩法高光'):
         vision.analyze(Path('unused'),Preferences(goal='highlight'))
 
@@ -104,3 +104,22 @@ def test_all_overlong_candidates_still_fail_without_inventing_clips():
     raw['end'] = 46.3
     with pytest.raises(ValueError, match='超出期望时长'):
         vision.select_highlights([raw], 120, max_duration=40)
+
+
+def test_visual_prompt_covers_non_game_footage(monkeypatch):
+    """Music videos and silent non-menu footage must be eligible for visual highlights."""
+    prompts = []
+    monkeypatch.setattr(vision, '_probe', lambda _: {'duration': 60})
+    monkeypatch.setattr(vision, 'sample', lambda *a: [])
+    responses = iter([
+        {'events': [candidate(0, 'other', 70)]},
+        {'events': [candidate(0, 'other', 70)]},
+    ])
+    def capture(content, **kw):
+        prompts.append(content[0]['text'])
+        return next(responses)
+    monkeypatch.setattr(vision, 'vision_call', capture)
+    found, _ = vision.analyze(Path('unused'), Preferences(goal='highlight'))
+    assert found and found[0].id == 'e0'
+    assert '音乐视频' in prompts[0] and '游戏视频剪辑师' not in prompts[0]
+    assert 'other' in prompts[0]

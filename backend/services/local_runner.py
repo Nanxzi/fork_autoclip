@@ -25,7 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-PROVIDER_CHOICES = ("dashscope", "openai", "gemini", "deepseek", "seed", "kimi", "glm", "grok", "ollama", "lmstudio")
+PROVIDER_CHOICES = ("dashscope", "openai", "gemini", "deepseek", "seed", "kimi", "glm", "grok", "infistar", "api88", "ollama", "lmstudio")
 
 
 # ---------------------------------------------------------------- environment ---
@@ -49,6 +49,10 @@ def configure_environment(data_dir: Optional[Path] = None, quiet: bool = True) -
     设定数据目录 / 数据库 / 日志相关环境变量。返回实际数据目录。
     必须在 import backend.core.database 之前调用。
     """
+    # Headless model/MCP connections need the same reset cleanup as the desktop
+    # runtime. The shim is idempotent and applies only to Windows CPython 3.13.
+    from backend.core.windows_asyncio import install_windows_proactor_cleanup
+    install_windows_proactor_cleanup()
     target = (data_dir or default_app_dir()).expanduser()
     target.mkdir(parents=True, exist_ok=True)
     (target / "logs").mkdir(parents=True, exist_ok=True)
@@ -145,7 +149,7 @@ def configure_llm(override: LLMOverride) -> Dict[str, Any]:
                 "dashscope": "dashscope_api_key", "openai": "openai_api_key",
                 "gemini": "gemini_api_key", "siliconflow": "siliconflow_api_key",
                 "deepseek": "deepseek_api_key",
-                "kimi": "kimi_api_key", "glm": "glm_api_key", "grok": "grok_api_key",
+                "kimi": "kimi_api_key", "glm": "glm_api_key", "grok": "grok_api_key", "infistar": "infistar_api_key", "api88": "api88_api_key",
                 "seed": "seed_api_key",
             }.get(provider)
             if key_field:
@@ -187,12 +191,15 @@ def check_llm_connection() -> Dict[str, Any]:
             preset = LOCAL_PRESETS.get(info.get("provider") or "")
             tip = f"请先启动 {preset.display_name.split('（')[0]}（{preset.docs_url}）" if preset else "请检查地址是否正确、服务是否已启动"
             return {"ok": False, **info, "error": f"{base_url} 不可达：{type(e).__name__}。{tip}"}
+    from backend.core.local_presets import context_hint_for
+    hint = context_hint_for(m.settings)
     try:
         ok = bool(m.current_provider.test_connection())
         return {
             "ok": ok,
             **info,
             "error": None if ok else "连接测试失败。请到「设置 → 模型」核对自备的密钥和模型名后再试。",
+            **({"context_hint": hint} if hint else {}),
         }
     except Exception as e:  # noqa: BLE001
         return {"ok": False, **info, "error": str(e)[:300]}
@@ -517,6 +524,13 @@ def environment_report() -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         report["whisper"] = {"ok": False, "error": str(e)}
     report["llm"] = check_llm_connection()
+    try:
+        # Same visual check as the app's readiness (capability=auto resolves like the pipeline).
+        from backend.services import ai_model_settings as ai_models
+        from backend.services.studio.readiness import _visual
+        report["visual"] = _visual(ai_models.for_editing())
+    except Exception as e:  # noqa: BLE001
+        report["visual"] = {"ok": False, "error": type(e).__name__}
     return report
 
 

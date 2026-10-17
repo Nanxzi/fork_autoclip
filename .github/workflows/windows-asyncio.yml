@@ -1,0 +1,133 @@
+name: Windows asyncio regression
+
+on:
+  workflow_call:
+  push:
+    paths:
+      - 'backend/core/windows_asyncio.py'
+      - 'backend/tests/test_windows_asyncio.py'
+      - 'backend/services/studio/store.py'
+      - 'backend/tests/test_studio_store_recovery.py'
+      - 'backend/tests/test_studio_persistent_write_failure.py'
+      - 'scripts/windows_tests/test_studio_store.py'
+      - 'backend/app_factory.py'
+      - 'scripts/lib/desktop_build_common.sh'
+      - '.github/workflows/windows-asyncio.yml'
+      - 'src-tauri/**'
+      - 'backend/services/render_limits.py'
+      - 'backend/services/studio/qa/**'
+      - 'backend/tests/test_studio_qa.py'
+      - 'scripts/windows_tests/test_studio_qa_windows.py'
+  pull_request:
+    paths:
+      - 'backend/core/windows_asyncio.py'
+      - 'backend/tests/test_windows_asyncio.py'
+      - 'backend/services/studio/store.py'
+      - 'backend/tests/test_studio_store_recovery.py'
+      - 'backend/tests/test_studio_persistent_write_failure.py'
+      - 'scripts/windows_tests/test_studio_store.py'
+      - 'backend/app_factory.py'
+      - 'scripts/lib/desktop_build_common.sh'
+      - '.github/workflows/windows-asyncio.yml'
+      - 'src-tauri/**'
+      - 'backend/services/render_limits.py'
+      - 'backend/services/studio/qa/**'
+      - 'backend/tests/test_studio_qa.py'
+      - 'scripts/windows_tests/test_studio_qa_windows.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  media-runtime:
+    name: Windows media runtime regressions
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.13"
+      - run: python -m pip install -r requirements.txt -r requirements-test.txt
+      - name: Real media inference, SenseVoice recovery and Windows state replacement
+        env:
+          AUTOCLIP_DATA_DIR: ${{ runner.temp }}/autoclip-media-regression
+          AUTOCLIP_APP_DIR: ${{ runner.temp }}/autoclip-media-regression
+          SENTRY_DSN: ""
+        run: python -m pytest backend/tests/test_framing_concurrency.py backend/tests/test_sensevoice.py backend/tests/test_studio_store_recovery.py backend/tests/test_studio_persistent_write_failure.py scripts/windows_tests/test_studio_store.py -q
+      - name: Prepare FFmpeg for real interview-window rendering
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'FFmpeg installation failed' }
+            $env:PATH = "$env:ChocolateyInstall\bin;$env:PATH"
+          }
+          ffmpeg -version
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg unavailable' }
+      - name: Quote-card edges and shot-mode transitions on Windows
+        env:
+          AUTOCLIP_DATA_DIR: ${{ runner.temp }}/autoclip-window-render-regression
+          AUTOCLIP_APP_DIR: ${{ runner.temp }}/autoclip-window-render-regression
+          SENTRY_DSN: ""
+        run: python -m pytest backend/tests/test_packaging_render.py -k preserves_slide_edges -q
+      - name: Concat paths with spaces, CJK and apostrophes
+        env:
+          AUTOCLIP_DATA_DIR: ${{ runner.temp }}/autoclip-concat-paths
+          AUTOCLIP_APP_DIR: ${{ runner.temp }}/autoclip-concat-paths
+          AUTOCLIP_VIDEO_ENCODER: libx264
+          SENTRY_DSN: ""
+        run: python -m pytest backend/tests/test_render_concat_paths.py -q
+      - name: Packaged Python QA spawn and 60s portrait benchmark
+        shell: pwsh
+        env:
+          AUTOCLIP_DATA_DIR: ${{ runner.temp }}/autoclip-qa-spawn
+          AUTOCLIP_APP_DIR: ${{ runner.temp }}/autoclip-qa-spawn
+          SENTRY_DSN: ""
+        run: |
+          python -m pytest scripts/windows_tests/test_studio_qa_windows.py -q -s
+          if (Test-Path "$env:RUNNER_TEMP\qa-windows-benchmark.json") {
+            Get-Content "$env:RUNNER_TEMP\qa-windows-benchmark.json"
+          }
+
+  cancel-process-tree:
+    name: Windows cancel_job process tree
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.13"
+      - name: Install runtime
+        run: python -m pip install -r requirements.txt
+      - name: cancel_job kills the parent and grandchild with taskkill /T
+        env:
+          AUTOCLIP_DATA_DIR: ${{ runner.temp }}/autoclip-cancel-tree
+          AUTOCLIP_APP_DIR: ${{ runner.temp }}/autoclip-cancel-tree
+          SENTRY_DSN: ""
+        run: python -m pytest backend/tests/test_mcp_jobs.py::test_cancel_kills_the_process_group_and_clears_temporary_files -q -s
+
+  windows-asyncio:
+    name: Windows Proactor cleanup
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # Match the desktop bundle; review the shim when upgrading Python.
+          python-version: "3.13.13"
+      - run: python -m pip install pytest
+      - run: python -m pytest backend/tests/test_windows_asyncio.py -q
+
+      - name: Backend process tree lifecycle
+        run: cargo test --manifest-path src-tauri/tests/windows-job/Cargo.toml
+      - name: Prepare compile-only resource placeholders
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src-tauri/resources/python, src-tauri/resources/backend, src-tauri/resources/ffmpeg, frontend/dist | Out-Null
+          Set-Content frontend/dist/index.html '<html></html>'
+      - name: Compile desktop integration (not an installer build)
+        run: cargo check --manifest-path src-tauri/Cargo.toml

@@ -30,6 +30,8 @@ impl Default for BackendStatus {
 pub struct BackendManager {
     status: Arc<Mutex<BackendStatus>>,
     process: Arc<Mutex<Option<Child>>>,
+    #[cfg(windows)]
+    job: Mutex<Option<crate::windows_job::BackendJob>>,
 }
 
 struct BackendLaunch {
@@ -43,6 +45,8 @@ impl BackendManager {
         Self {
             status: Arc::new(Mutex::new(BackendStatus::default())),
             process: Arc::new(Mutex::new(None)),
+            #[cfg(windows)]
+            job: Mutex::new(None),
         }
     }
 
@@ -62,10 +66,17 @@ impl BackendManager {
             .stderr(Stdio::piped())
             .env("AUTOCLIP_DESKTOP_MODE", "true")
             .env("AUTOCLIP_MODE", "desktop")
+            .env(
+                "AUTOCLIP_BUILD_ENVIRONMENT",
+                if cfg!(debug_assertions) { "development" } else { "production" },
+            )
             // Keep signed bundle resources immutable, including Python startup imports.
             .env("PYTHONDONTWRITEBYTECODE", "1")
             // Single source of truth for the version the backend reports in /settings.
-            .env("AUTOCLIP_APP_VERSION", env!("CARGO_PKG_VERSION"));
+            .env("AUTOCLIP_APP_VERSION", env!("CARGO_PKG_VERSION"))
+            // The backend exits when this process is gone, even after kill -9 or a crash
+            // (macOS has no Job Object; on Windows the job already covers it).
+            .env("AUTOCLIP_PARENT_PID", std::process::id().to_string());
 
         // 崩溃上报：构建时若注入了 SENTRY_DSN，传给 Python 后端（未配置则为空，sentry_setup no-op）
         if let Some(dsn) = option_env!("SENTRY_DSN") {
@@ -102,11 +113,8 @@ impl BackendManager {
         // (%APPDATA%\AutoClip on Windows, ~/.local/share/AutoClip on Linux) —
         // on macOS this is exactly the old default, so existing installs keep
         // their data.
-        if std::env::var_os("AUTOCLIP_APP_DIR").is_none() {
-            if let Ok(data_dir) = app_handle.path().data_dir() {
-                cmd.env("AUTOCLIP_APP_DIR", data_dir.join("AutoClip"));
-            }
-        }
+        let app_dir = crate::telemetry_runtime::app_dir(app_handle.path().data_dir().ok());
+        crate::telemetry_runtime::configure_backend(&mut cmd, app_dir.as_deref());
 
         #[cfg(target_os = "windows")]
         {
@@ -117,7 +125,21 @@ impl BackendManager {
         }
 
         match cmd.spawn() {
-            Ok(child) => {
+            #[allow(unused_mut)]
+            Ok(mut child) => {
+                #[cfg(windows)]
+                {
+                    // Own the complete process tree, including Celery/ffmpeg.
+                    // Closing the app handle (even on a crash) releases DLL locks.
+                    match crate::windows_job::BackendJob::attach(&child) {
+                        Ok(job) => *self.job.lock().unwrap() = Some(job),
+                        Err(error) => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(format!("无法管理后端进程生命周期: {error}"));
+                        }
+                    }
+                }
                 let pid = child.id();
                 let start_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -152,14 +174,23 @@ impl BackendManager {
 
     pub fn stop(&self) -> Result<(), String> {
         let mut status = self.status.lock().unwrap();
-        if !status.is_running {
-            return Err("后端服务未运行".to_string());
-        }
-
         let mut process = self.process.lock().unwrap();
+        #[cfg(windows)]
+        let terminated_tree = {
+            let job = self.job.lock().unwrap().take();
+            let owned = job.is_some();
+            drop(job);
+            owned
+        };
+        #[cfg(not(windows))]
+        let terminated_tree = false;
         if let Some(mut child) = process.take() {
-            if let Err(e) = child.kill() {
-                return Err(format!("停止后端服务失败: {}", e));
+            if !terminated_tree && child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                if let Err(error) = child.kill() {
+                    // Retain ownership if termination failed so it can be retried.
+                    *process = Some(child);
+                    return Err(format!("停止后端服务失败: {error}"));
+                }
             }
             let _ = child.wait();
         }

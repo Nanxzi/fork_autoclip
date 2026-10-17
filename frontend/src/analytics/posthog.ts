@@ -10,7 +10,9 @@
  * 因此 dev 环境（无 key）不会污染线上数据。
  */
 import posthog from 'posthog-js'
+import { apiConfigManager } from '../utils/apiConfig'
 import { routeName, type Properties } from './workflow'
+import { nativeRuntime, runtimeProperties } from './runtime'
 
 export const POSTHOG_KEY = import.meta.env.VITE_PUBLIC_POSTHOG_KEY as string | undefined
 export const POSTHOG_HOST =
@@ -21,11 +23,176 @@ export const POSTHOG_HOST =
 const OPT_OUT_STORAGE_KEY = 'autoclip.analytics.optOut'
 
 let initialized = false
+let flagsNetworkEnabled = false
 let preferenceOverride: boolean | undefined
+let publishedDistinctId = ''
+let pendingDistinctId = ''
+let retryIdentity = false
+let watchingIdentity = false
+let identityRetryTimer: ReturnType<typeof setTimeout> | undefined
+let identityRetries = 0
+const ANONYMOUS_ID = /^(?:[A-Fa-f0-9]{32}|[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12})$/
+
+/** Persist the SDK's anonymous id so backend events join the same person and experiment. */
+function publishAnonymousId(): void {
+  if (!initialized || !isAnalyticsEnabled() || typeof fetch !== 'function') return
+  let id = ''
+  try { id = String(posthog.get_distinct_id?.() || '') } catch { return }
+  if (!ANONYMOUS_ID.test(id) || id === publishedDistinctId) return
+  syncSentryUser(id)
+  // Packaged webviews cannot PUT to the initial relative /api/v1 URL.
+  if (typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
+      && !apiConfigManager.isReady()) return
+  // The desktop API port often arrives while the first attempt is still in flight.
+  if (pendingDistinctId) {
+    retryIdentity = true
+    return
+  }
+  pendingDistinctId = id
+  retryIdentity = false
+  const controller = typeof AbortController === 'function' ? new AbortController() : undefined
+  const timeout = controller ? setTimeout(() => controller.abort(), 5000) : undefined
+  const finish = (ok: boolean) => {
+    if (timeout !== undefined) clearTimeout(timeout)
+    if (pendingDistinctId === id) pendingDistinctId = ''
+    if (ok && isAnalyticsEnabled()) {
+      publishedDistinctId = id
+      identityRetries = 0
+      if (retryIdentity) {
+        retryIdentity = false
+        publishAnonymousId()
+      }
+    } else if (retryIdentity && isAnalyticsEnabled()) {
+      retryIdentity = false
+      publishAnonymousId()
+    } else if (isAnalyticsEnabled() && identityRetries < 5 && typeof setTimeout === 'function') {
+      // A ready port can still race a restart or a failed first request.
+      if (identityRetryTimer !== undefined) clearTimeout(identityRetryTimer)
+      identityRetryTimer = setTimeout(() => {
+        identityRetryTimer = undefined
+        publishAnonymousId()
+      }, 1000 * 2 ** identityRetries++)
+    }
+  }
+  try {
+    const base = String(apiConfigManager.getBaseUrl() || '/api/v1').replace(/\/$/, '')
+    void fetch(`${base}/settings/analytics-identity`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ distinct_id: id }),
+      ...(controller ? { signal: controller.signal } : {}),
+    }).then((response) => finish(Boolean(response?.ok))).catch(() => finish(false))
+  } catch {
+    finish(false)
+  }
+}
+
+function syncSentryUser(id: string | null): void {
+  try {
+    void import('../desktop/sentry').then((mod) => {
+      try { mod.setAnonymousUser(id) } catch { /* identity cannot break analytics */ }
+    }).catch(() => undefined)
+  } catch { /* analytics.test.cjs require() must not throw */ }
+}
+
+function watchAnonymousId(): void {
+  if (watchingIdentity) return
+  watchingIdentity = true
+  try { apiConfigManager.addListener(() => {
+    identityRetries = 0
+    publishAnonymousId()
+  }) } catch { /* backend port can arrive later */ }
+}
+
 const preferenceListeners = new Set<() => void>()
+const remoteFlagListeners = new Set<() => void>()
 export function onAnalyticsPreferenceChange(listener: () => void): () => void {
   preferenceListeners.add(listener)
   return () => { preferenceListeners.delete(listener) }
+}
+export function subscribeRemoteFlags(listener: () => void): () => void {
+  remoteFlagListeners.add(listener)
+  return () => { remoteFlagListeners.delete(listener) }
+}
+// W157-N3: posthog-js restores the previous session's flags from its own persistence
+// before the network answers. After an upgrade those are the old version's values
+// (e.g. pkg_templates_v1=false from the 1.5.6 cohort), so ignore them until this
+// session's flag response arrives.
+let remoteFlagsFresh = false
+export function markRemoteFlagsResponse(errorsLoading?: boolean): void {
+  if (!errorsLoading) remoteFlagsFresh = true
+  notifyRemoteFlags()
+}
+/** Test seam. */
+export function resetRemoteFlagsFresh(): void {
+  remoteFlagsFresh = false
+}
+function notifyRemoteFlags() {
+  for (const listener of remoteFlagListeners) {
+    try { listener() } catch { /* flag subscribers cannot break analytics */ }
+  }
+}
+
+/**
+ * Already-loaded flag value. Never calls the network.
+ * Returns undefined unless analytics is on and flag requests were enabled at init.
+ */
+export function readLoadedFlag(name: string): unknown {
+  if (!initialized || !flagsNetworkEnabled || !isAnalyticsEnabled() || !remoteFlagsFresh) return undefined
+  try {
+    const variants = posthog.featureFlags?.getFlagVariants?.()
+    if (!variants || typeof variants !== 'object' || !Object.prototype.hasOwnProperty.call(variants, name)) return undefined
+    const value = variants[name]
+    return typeof value === 'boolean' || typeof value === 'string' ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Properties PostHog evaluates flags against. `app_version` is the desktop
+ * version as plain MAJOR.MINOR.PATCH (e.g. "1.5.7") so release conditions can
+ * use the semver operators (`app_version` >= 1.5.7). Sent as flag-only person
+ * properties (no person profile is created; person_profiles stays
+ * identified_only) and registered as a super property for events.
+ */
+export function flagPersonProperties(): { app_version: string } {
+  const raw = String(import.meta.env.VITE_APP_VERSION || '').trim().replace(/^v/i, '')
+  return { app_version: raw || 'unknown' }
+}
+
+type FlagPropsTarget = {
+  register?: (props: Properties) => void
+  setPersonPropertiesForFlags?: (props: Properties, reload?: boolean) => void
+}
+
+function applyFlagProperties(target: FlagPropsTarget) {
+  try {
+    const props = flagPersonProperties()
+    target.register?.({ ...props, ...runtimeProperties() })
+    // reload=false: callers either run before the first flag request (loaded) or reload right after.
+    target.setPersonPropertiesForFlags?.(props, false)
+  } catch { /* analytics cannot break the app */ }
+}
+
+function enableFlagNetwork() {
+  flagsNetworkEnabled = true
+  applyFlagProperties(posthog)
+  try {
+    posthog.set_config?.({ advanced_disable_flags: false })
+    posthog.featureFlags?.setReloadingPaused?.(false)
+    posthog.reloadFeatureFlags?.()
+  } catch { /* analytics cannot break settings */ }
+  notifyRemoteFlags()
+}
+
+function disableFlagNetwork() {
+  flagsNetworkEnabled = false
+  try {
+    posthog.set_config?.({ advanced_disable_flags: true })
+    posthog.featureFlags?.setReloadingPaused?.(true)
+  } catch { /* analytics cannot break settings */ }
+  notifyRemoteFlags()
 }
 
 /** Never let analytics failures change a successful product operation. */
@@ -33,13 +200,15 @@ export function captureBusinessEvent(name: string, properties: Properties = {}):
   if (!initialized || !isAnalyticsEnabled()) return false
   try {
     return posthog.capture(name, {
+      ...properties,
+      ...runtimeProperties(),
       schema_version: 2,
-      analytics_environment: import.meta.env.DEV ? 'development' : 'production',
+      app_version: import.meta.env.VITE_APP_VERSION || 'unknown',
+      analytics_environment: import.meta.env.VITE_TELEMETRY_VALIDATION === 'true' ? 'validation' : import.meta.env.DEV ? 'development' : 'production',
       runtime: '__TAURI_INTERNALS__' in window ? 'desktop' : 'web',
       entrypoint: 'ui',
       app_locale: typeof document !== 'undefined' ? document.documentElement.lang : 'unknown',
       system_locale: typeof navigator !== 'undefined' ? navigator.language : 'unknown',
-      ...properties,
     }) !== undefined
   } catch { return false }
 }
@@ -47,6 +216,7 @@ export function captureBusinessEvent(name: string, properties: Properties = {}):
 /** 是否启用了埋点（已配置 key 且用户未关闭）。 */
 export function isAnalyticsEnabled(): boolean {
   if (!POSTHOG_KEY) return false
+  if (preferenceOverride !== undefined) return preferenceOverride
   try {
     return localStorage.getItem(OPT_OUT_STORAGE_KEY) !== 'true'
   } catch {
@@ -66,12 +236,15 @@ export function initAnalytics(): void {
     }
     return
   }
+  if (!isAnalyticsEnabled()) return
 
   try {
+    const id = nativeRuntime().distinct_id
     posthog.init(POSTHOG_KEY, {
     api_host: POSTHOG_HOST,
     // 桌面端从 file:// / 自定义协议加载，cookie 不可靠，统一用 localStorage 持久化匿名 ID
     persistence: 'localStorage',
+    ...(id && ANONYMOUS_ID.test(id) ? { bootstrap: { distinctID: id, isIdentifiedID: false } } : {}),
     // 未登录前不创建 person profile，保持匿名；登录后通过 identify 关联（见 ROADMAP Phase 1）
     person_profiles: 'identified_only',
     // Business events are explicit; DOM text may contain filenames or subtitles.
@@ -79,6 +252,9 @@ export function initAnalytics(): void {
     capture_performance: false,
     // 隐私优先：默认不录屏（PostHog 端也需另行开启）
     disable_session_recording: true,
+    // Flag requests exist only while analytics is on. Opt-out never initializes the SDK,
+    // and turning analytics off pauses any reload that was already started.
+    advanced_disable_flags: false,
     // HashRouter 下手动上报 pageview（见 trackPageview）
     capture_pageview: false,
     capture_pageleave: false,
@@ -86,10 +262,17 @@ export function initAnalytics(): void {
     // 尊重用户在本机的关闭偏好
     opt_out_capturing_by_default: !isAnalyticsEnabled(),
     loaded: (ph) => {
+      // Runs before posthog-js issues its first flag request, so that request already carries app_version.
+      applyFlagProperties(ph)
+      try { ph.onFeatureFlags?.((_flags: unknown, _variants: unknown, context?: { errorsLoading?: boolean }) => markRemoteFlagsResponse(context?.errorsLoading)) } catch { /* flags are optional */ }
+      publishAnonymousId()
       if (import.meta.env.DEV) ph.debug()
     },
     })
+    flagsNetworkEnabled = true
     initialized = true
+    watchAnonymousId()
+    publishAnonymousId()
   } catch {
     initialized = false
   }
@@ -105,11 +288,23 @@ export function setAnalyticsEnabled(enabled: boolean): void {
   } catch {
     /* localStorage 不可用时忽略 */
   }
-  for (const listener of preferenceListeners) listener()
+  for (const listener of preferenceListeners) { try { listener() } catch { /* isolate observers */ } }
+  if (!initialized && enabled) initAnalytics()
   if (!initialized) return
   try {
-    if (enabled) posthog.opt_in_capturing()
-    else posthog.opt_out_capturing()
+    if (enabled) {
+      posthog.opt_in_capturing()
+      publishAnonymousId()
+      if (!flagsNetworkEnabled) enableFlagNetwork()
+    } else {
+      posthog.opt_out_capturing()
+      disableFlagNetwork()
+      publishedDistinctId = ''
+      if (identityRetryTimer !== undefined) clearTimeout(identityRetryTimer)
+      identityRetryTimer = undefined
+      identityRetries = 0
+      syncSentryUser(null)
+    }
   } catch { /* analytics cannot break settings */ }
 }
 
@@ -131,6 +326,9 @@ export function identifyUser(
 export function resetUser(): void {
   if (!initialized) return
   posthog.reset()
+  publishedDistinctId = ''
+  syncSentryUser(null)
+  publishAnonymousId()
 }
 
 export { posthog }

@@ -35,6 +35,7 @@ on:
 # step fails with "Resource not accessible by integration" (403).
 permissions:
   contents: write
+  actions: read
 
 env:
   # GitHub runners are in the US; the default tsinghua mirror in the build
@@ -44,7 +45,61 @@ env:
   SENTRY_PROJECT: autoclip-frontend
 
 jobs:
+  # Internal product acceptance must precede creation of a public release tag.
+  # Manual builds stay untagged; tagged builds require an immutable receipt for
+  # the exact source SHA. A green CI run alone cannot satisfy this gate.
+  candidate-gate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Reject manual builds of already public version numbers
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF" in refs/heads/*) ;; *) echo "Internal builds require an untagged branch"; exit 1 ;; esac
+          VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[].tag_name' > known-release-tags.txt
+          git ls-remote --tags origin "refs/tags/v$VERSION" > existing-candidate-tag.txt
+          python - "$VERSION" <<'PY'
+          import pathlib, re, sys
+          version = sys.argv[1]
+          assert re.fullmatch(r'\d+\.\d+\.\d+', version), 'invalid internal candidate version'
+          assert 'v' + version not in pathlib.Path('known-release-tags.txt').read_text().splitlines(), 'candidate version is already public; choose the next patch only after authorization'
+          assert not pathlib.Path('existing-candidate-tag.txt').read_text().strip(), 'candidate tag already exists'
+          PY
+      - name: Require successful internal desktop acceptance before tagged builds
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          # actions/checkout rewrites refs/tags/$TAG as a lightweight tag; restore the annotated object.
+          git fetch --no-tags --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          ACCEPTANCE_RUN_ID=$(python scripts/internal_acceptance.py tag-run --tag "$TAG")
+          gh api "repos/$GH_REPO/actions/runs/$ACCEPTANCE_RUN_ID" > internal-acceptance-run.json
+          gh run download "$ACCEPTANCE_RUN_ID" -n internal-acceptance -D internal-accepted
+          python scripts/internal_acceptance.py check-receipt --version "${TAG#v}" --commit "$GITHUB_SHA" \
+            --receipt internal-accepted/receipt.json --acceptance-run internal-acceptance-run.json
+
+  # The exact candidate must pass source checks, including hotfix tag builds.
+  source-quality:
+    uses: ./.github/workflows/ci.yml
+
+  sensevoice-runtime:
+    uses: ./.github/workflows/sensevoice.yml
+
+  whisper-runtime:
+    uses: ./.github/workflows/issue-recovery.yml
+
   build-macos-arm64:
+    needs: [candidate-gate, source-quality, sensevoice-runtime, whisper-runtime]
     if: github.event_name == 'push' || inputs.build_macos
     runs-on: macos-14  # Apple Silicon runner
     steps:
@@ -102,15 +157,26 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: bash scripts/build_macos_arm.sh
 
-      - name: Verify shipped macOS runtime before publishing
+      - name: Verify shipped macOS runtime and backend Sentry initialization before publishing
         shell: bash
         run: |
           set -euo pipefail
           APP="src-tauri/target/release/bundle/macos/AutoClip Desktop.app"
           RESOURCES="$PWD/$APP/Contents/Resources/resources"
           codesign --verify --deep --strict "$APP"
+          # The bundle smoke requires "Sentry 已启用" and rejects "Sentry 初始化失败".
+          # It supplies a dummy DSN with a discard transport, so no events are sent.
           "$RESOURCES/python/bin/python3" -B scripts/verify_macos_bundle.py --resources "$RESOURCES" --output-parent "$RUNNER_TEMP/autoclip-release-validation"
+          "$RESOURCES/python/bin/python3" -B scripts/verify_sensevoice.py --resources "$RESOURCES" --report "$RUNNER_TEMP/macos-sensevoice-installed.json"
           codesign --verify --deep --strict "$APP"
+
+      - name: Preserve installed macOS ASR evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-installed-sensevoice
+          path: ${{ runner.temp }}/macos-sensevoice-installed.json
+          if-no-files-found: ignore
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
@@ -123,6 +189,7 @@ jobs:
           retention-days: 30
 
   build-windows-x64:
+    needs: [candidate-gate, source-quality, sensevoice-runtime, whisper-runtime]
     if: github.event_name == 'push' || inputs.build_windows
     runs-on: windows-latest
     defaults:
@@ -196,14 +263,74 @@ jobs:
             src-tauri/target/release/bundle/nsis/*.sig
           retention-days: 30
 
+  # 没有 Windows 真机时的替代冒烟：在干净的 windows-latest 上装上一个正式版，
+  # 模拟旧版后端残留锁住 _asyncio.pyd，再静默覆盖安装本次构建，然后用安装目录里的 Python
+  # 跑后端 / ffmpeg / 来源守卫。界面和真实链接下载仍需人工或用户验证，见 RELEASE_CHECKLIST.md。
+  smoke-windows-x64:
+    needs: build-windows-x64
+    if: needs.build-windows-x64.result == 'success'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download new installer
+        uses: actions/download-artifact@v4
+        with:
+          name: autoclip-desktop-windows-x64
+          path: new
+
+      - name: Upgrade over previous release and verify installed runtime
+        run: |
+          $installer = Get-ChildItem -Recurse new -Filter '*-setup.exe' | Select-Object -First 1
+          ./scripts/windows_upgrade_smoke.ps1 -NewInstaller $installer.FullName
+
+      - name: Upload smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-smoke-report
+          path: |
+            windows-smoke.json
+            windows-sensevoice-installed.json
+            windows-whisper-installed.json
+          if-no-files-found: ignore
+
+  # Bind untagged installers to their source/run without creating a Release.
+  internal-provenance:
+    if: github.event_name == 'workflow_dispatch' && needs.build-macos-arm64.result == 'success' && needs.build-windows-x64.result == 'success' && needs.smoke-windows-x64.result == 'success'
+    needs: [build-macos-arm64, build-windows-x64, smoke-windows-x64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: autoclip-desktop-*
+          path: internal-assets
+          merge-multiple: true
+      - name: Record untagged package hashes and source identity
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          python3 scripts/internal_acceptance.py provenance --version "$VERSION" --commit "$GITHUB_SHA" \
+            --build-run-id "$GITHUB_RUN_ID" --assets internal-assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: internal-desktop-provenance
+          path: internal-assets/internal-build-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
   # Publish only after both platforms succeed; never advertise a partial release.
   release:
-    if: startsWith(github.ref, 'refs/tags/v') && needs.build-macos-arm64.result == 'success' && needs.build-windows-x64.result == 'success'
-    needs: [build-macos-arm64, build-windows-x64]
+    if: startsWith(github.ref, 'refs/tags/v') && needs.build-macos-arm64.result == 'success' && needs.build-windows-x64.result == 'success' && needs.smoke-windows-x64.result == 'success'
+    needs: [build-macos-arm64, build-windows-x64, smoke-windows-x64]
     runs-on: ubuntu-latest
-    env:
-      # 放在 job 级：step 自己的 env 在它的 if 里读不到
-      WEBSITE_DISPATCH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -217,6 +344,22 @@ jobs:
 
       - name: List artifacts
         run: ls -la dist
+
+      - name: Set up Python for CLI and MCP release
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build and verify CLI and MCP wheel from the same tag
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-cjk
+          python -m pip install -r requirements.txt
+          python -m pip install 'opencv-python-headless>=4.10'
+          python -m pip wheel --no-deps --wheel-dir dist .
+          python scripts/verify_python_wheel.py dist/autoclip_mcp-*-py3-none-any.whl --video backend/assets/example/source.mp4 --report "$RUNNER_TEMP/wheel-portrait-report.json"
+          python scripts/build_python_release.py dist/autoclip_mcp-*-py3-none-any.whl --out "dist/autoclip-${GITHUB_REF_NAME#v}-cli-mcp.zip"
+          (cd dist && sha256sum *.whl *-cli-mcp.zip > python-release-sha256.txt)
 
       # Release 正文 = CHANGELOG.md 里该版本的段落 + 平台安装说明（scripts/release_notes.py，仅标准库）
       - name: Render release notes from CHANGELOG
@@ -238,24 +381,21 @@ jobs:
           python3 scripts/write_updater_manifest.py "${ARGS[@]}"
           ls -la dist/latest.json 2>/dev/null || echo "NOTE: latest.json not written (no signed artifacts)"
 
-      - name: Create / update GitHub Release
+      # 先以 Pre-release 发出：应用内更新读的是 releases/latest/download/latest.json，
+      # Pre-release 不算 latest，所以这时只有手动下载的人拿得到。
+      # 真机冒烟 + 观察期通过后，跑 promote-release.yml 转正，才推给所有用户。见 RELEASE_CHECKLIST.md。
+      - name: Bind final release assets to this source and build run
+        run: |
+          python3 scripts/release_acceptance.py provenance --tag "$GITHUB_REF_NAME" \
+            --commit "$(git rev-parse HEAD)" --build-run-id "$GITHUB_RUN_ID" --assets dist
+
+      - name: Create / update GitHub Release (pre-release)
         uses: softprops/action-gh-release@v2
         with:
           name: "AutoClip Desktop ${{ github.ref_name }}"
           files: dist/*
           body_path: release_body.md
+          prerelease: true
+          make_latest: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # 通知官网仓库更新版本号 / 下载链接（autoclip_intro/.github/workflows/sync-release.yml）。
-      # 需要 WEBSITE_DISPATCH_TOKEN（fine-grained PAT，仓库 autoclip_intro，Contents: Read and write）；
-      # 没配就跳过——官网那边有每日 cron 兜底。见 scripts/website/README.md。
-      - name: Notify website (repository_dispatch)
-        if: env.WEBSITE_DISPATCH_TOKEN != ''
-        run: |
-          curl -sS -f -X POST \
-            -H "Authorization: Bearer $WEBSITE_DISPATCH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/zhouxiaoka/autoclip_intro/dispatches \
-            -d '{"event_type":"autoclip-release","client_payload":{"tag":"${{ github.ref_name }}"}}'
-          echo "已通知官网同步到 ${{ github.ref_name }}"

@@ -4,6 +4,15 @@ from backend.services.studio import subtitle_promo as promo, intelligence, jobs,
 from backend.services.studio.models import Preferences
 from backend.tests.test_subtitle_highlights import clip
 
+
+@pytest.fixture(autouse=True)
+def full_length_synthetic_source(monkeypatch):
+    # The shared `source` fixture is a 3 s clip standing in for a normal-length video. The
+    # too-short precheck (RC156 Win QA #10) has its own tests in test_media_precheck.py.
+    from backend.pipeline import media_precheck
+    monkeypatch.setattr(media_precheck, 'too_short', lambda duration: False)
+
+
 @pytest.fixture
 def evidence(monkeypatch):
     monkeypatch.setattr(promo,'_load_srt_entries',lambda _: [
@@ -38,12 +47,12 @@ def test_missing_subtitle_evidence_makes_no_model_call(monkeypatch):
 
 
 def test_subtitle_promo_import_confirmation_and_edit(client,source,evidence,monkeypatch):
-    monkeypatch.setattr(analysis_preferences,'load',lambda:analysis_preferences.AnalysisPreferences())
+    monkeypatch.setattr(analysis_preferences,'load',lambda:analysis_preferences.AnalysisPreferences(analysis_mode='subtitle'))
     analyses=[]; requests=[]
     monkeypatch.setattr(jobs,'run_content',lambda *a:analyses.append(a) or [clip(0,1)])
     monkeypatch.setattr(intelligence,'text_json',lambda *a:requests.append(a) or {'drafts':[{'candidate':0,'title':'Topic','hook':'Supported opening'}]})
     class Immediate:
-        def submit(self,fn,*args):fn(*args)
+        def submit(self, fn, *args, **kwargs):fn(*args, **kwargs)
     monkeypatch.setattr(jobs,'executor',Immediate())
     r=client.post('/studio/import',files={'video':('test.mp4',source.read_bytes(),'video/mp4')})
     assert r.status_code==200

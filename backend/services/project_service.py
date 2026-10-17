@@ -76,6 +76,14 @@ class ProjectService(BaseService[Project, ProjectCreate, ProjectUpdate, ProjectR
         status_value = getattr(status, "value", status)
         if str(status_value).lower() != "failed":
             return None, None
+        config = getattr(project, 'processing_config', None) or {}
+        if config.get('smart_import') and config.get('studio_generation_status') in ('failed', 'partial'):
+            # Studio-managed runs mirror their own reason; a Task row may be from an older run
+            # or carry nothing when the render (not the pipeline) failed (RC156 #13).
+            message = config.get('studio_generation_error')
+            if isinstance(message, str) and message:
+                code = config.get('studio_generation_error_code')
+                return message, code if isinstance(code, str) and code else None
         from ..models.task import Task
         project_id = str(getattr(project, 'id', ''))
         task = (
@@ -106,12 +114,18 @@ class ProjectService(BaseService[Project, ProjectCreate, ProjectUpdate, ProjectR
         if not project:
             return None
         
+        from backend.services.studio.project_completion import sync_project_completion
+        sync_project_completion(project_id, self.db)
+
         # Get actual statistics from database
         from ..models.clip import Clip
         from ..models.collection import Collection
         from ..models.task import Task
         
         total_clips = self.db.query(Clip).filter(Clip.project_id == project_id).count()
+        completed_variants = (project.processing_config or {}).get('studio_completed_variant_count', 0)
+        if isinstance(completed_variants, int):
+            total_clips = max(total_clips, completed_variants)
         total_collections = self.db.query(Collection).filter(Collection.project_id == project_id).count()
         total_tasks = self.db.query(Task).filter(Task.project_id == project_id).count()
         
@@ -144,6 +158,12 @@ class ProjectService(BaseService[Project, ProjectCreate, ProjectUpdate, ProjectR
         filters: Optional[ProjectFilter] = None
     ) -> ProjectListResponse:
         """Get paginated projects with filtering."""
+        # Recover completed visual imports from older releases before filtering.
+        from backend.services.studio.project_completion import sync_project_completion
+        for active in self.repository.get_processing_projects():
+            if (active.processing_config or {}).get('smart_import'):
+                sync_project_completion(str(active.id), self.db)
+
         # Convert filters to dict
         filter_dict = {}
         if filters:
@@ -162,6 +182,9 @@ class ProjectService(BaseService[Project, ProjectCreate, ProjectUpdate, ProjectR
             
             project_id = str(project.id)
             total_clips = self.db.query(Clip).filter(Clip.project_id == project_id).count()
+            completed_variants = (project.processing_config or {}).get('studio_completed_variant_count', 0)
+            if isinstance(completed_variants, int):
+                total_clips = max(total_clips, completed_variants)
             total_collections = self.db.query(Collection).filter(Collection.project_id == project_id).count()
             total_tasks = self.db.query(Task).filter(Task.project_id == project_id).count()
             
@@ -271,7 +294,10 @@ class ProjectService(BaseService[Project, ProjectCreate, ProjectUpdate, ProjectR
                 return False
             
             logger.info(f"开始删除项目 {project_id}: {project.name}")
-            
+            # Studio 没有取消接口：删除是界面上唯一的中止。先取消再删库，否则渲染还会把文件写回（RC156 #12）。
+            from backend.core.project_cancellation import cancel as cancel_project
+            cancel_project(project_id)
+
             # 检查是否有正在运行的任务（只对非完成状态的项目进行检查）
             if project.status not in ["completed", "failed"]:
                 running_tasks = self.db.query(Task).filter(
@@ -280,6 +306,8 @@ class ProjectService(BaseService[Project, ProjectCreate, ProjectUpdate, ProjectR
                 ).count()
                 
                 if running_tasks > 0:
+                    from backend.core.project_cancellation import restore as restore_project
+                    restore_project(project_id)
                     logger.warning(f"项目 {project_id} 有 {running_tasks} 个正在运行的任务，无法删除")
                     return False
             else:
@@ -333,10 +361,14 @@ class ProjectService(BaseService[Project, ProjectCreate, ProjectUpdate, ProjectR
                 
             except Exception as e:
                 self.db.rollback()
+                from backend.core.project_cancellation import restore as restore_project
+                restore_project(project_id)
                 logger.error(f"删除项目 {project_id} 数据库操作失败: {str(e)}")
                 return False
             
         except Exception as e:
+            from backend.core.project_cancellation import restore as restore_project
+            restore_project(project_id)
             logger.error(f"删除项目 {project_id} 时发生错误: {str(e)}")
             return False
     
@@ -348,14 +380,12 @@ class ProjectService(BaseService[Project, ProjectCreate, ProjectUpdate, ProjectR
             project_id: 项目ID
         """
         try:
-            # 项目目录路径
-            project_dir = Path(f"data/projects/{project_id}")
-            
-            if project_dir.exists():
-                logger.info(f"删除项目目录: {project_dir}")
-                shutil.rmtree(project_dir)
+            # get_project_directory() would recreate the folder; remove_files never creates it.
+            from backend.core.project_cancellation import remove_files
+            if remove_files(project_id):
+                logger.info(f"删除项目目录: {project_id}")
             else:
-                logger.info(f"项目目录不存在: {project_dir}")
+                logger.info(f"项目目录不存在或暂时无法清空: {project_id}")
             
             # 删除全局输出目录中的相关文件（如果存在）
             # 注意：现在主要使用项目内目录，但保留对全局目录的清理以防遗留文件

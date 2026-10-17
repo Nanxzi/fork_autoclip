@@ -9,10 +9,82 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
+_ANONYMOUS_ID = re.compile(r"^(?:[A-Fa-f0-9]{32}|[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12})$")
+
 logger = logging.getLogger(__name__)
+
+STUDIO_ERROR_CODES = {"validation", "missing_resource", "unexpected", "timeout", "connection", "authentication", "rate_limited", "provider_error", "invalid_response", "output_truncated", "refused", "llm_not_configured", "whisper_not_installed", "whisper_install_failed", "transcription_empty", "subtitle_setup", "timeline_empty", "source_blocked", "source_too_short", "source_no_audio", "source_unreadable", "service_restarted"}
+# Expected failures caused by the environment or by the user's own source (too short,
+# no audio track): never sent to Sentry, still recorded locally with their code.
+UNREPORTED_STUDIO_ERROR_CODES = {"source_blocked", "source_too_short", "source_no_audio", "service_restarted"}
+# Legacy import task kinds (backend.tasks.import_processing) with the same meaning.
+UNREPORTED_IMPORT_FAILURE_KINDS = {"source-input"}
+PIPELINE_STAGES = {"INGEST", "SUBTITLE", "ANALYZE", "HIGHLIGHT", "EXPORT", "DONE"}
+
+
+def studio_error_code(error: Exception) -> str:
+    from backend.core.project_cancellation import ServiceRestarted
+    if isinstance(error, ServiceRestarted):
+        return 'service_restarted'
+    from backend.services.studio.intelligence import VisionRequestError
+    from backend.pipeline.failures import PipelineFailure
+    if isinstance(error, (VisionRequestError, PipelineFailure)) and error.code in STUDIO_ERROR_CODES:
+        return error.code
+    # Local render, frame sampling and optional-runtime preparation use typed subprocess timeouts.
+    if isinstance(error, subprocess.TimeoutExpired):
+        return "timeout"
+    # Text rewrite/translation call the SDK directly, without a pipeline wrapper.
+    # Recognize its typed failures; unrelated filesystem/programming errors stay unexpected.
+    try:
+        from openai import APIError
+    except ImportError:
+        APIError = ()
+    if isinstance(error, APIError):
+        from backend.pipeline.failures import model_call_error_code
+        return model_call_error_code(error)
+    if isinstance(error, FileNotFoundError):
+        return "missing_resource"
+    if isinstance(error, ValueError):
+        return "validation"
+    return "unexpected"
+
+
+_PIPELINE_FAILURE_STAGES = {"INGEST": "ingest", "SUBTITLE": "subtitle", "ANALYZE": "analyze",
+                            "HIGHLIGHT": "analyze", "EXPORT": "render"}
+
+
+def studio_failure_context(error: Exception, phase: str) -> dict:
+    """Where an automatic run failed and the provider HTTP status, without messages or URLs."""
+    from backend.services.studio.intelligence import VisionRequestError
+    from backend.pipeline.failures import PipelineFailure, http_status_of
+    from backend.core.llm_telemetry import classify_run_upstream
+    stage = phase
+    if isinstance(error, PipelineFailure):
+        stage = _PIPELINE_FAILURE_STAGES.get(error.stage, phase)
+    elif isinstance(error, VisionRequestError) and phase != "screening":
+        stage = "vision"
+    result = {"failure_stage": stage}
+    # The pipeline wraps provider errors (`PipelineFailure(...) from error`); the status lives on the cause.
+    status = http_status_of(error)
+    if status is not None:
+        result["http_status"] = status
+    # Site refusals and local setup failures are not upstream model errors.
+    # A Bilibili 403 must not become permission_denied / model_forbidden.
+    skip_upstream = isinstance(error, PipelineFailure) and error.code in {
+        "source_blocked", "source_too_short", "source_no_audio", "source_unreadable",
+        "service_restarted", "whisper_not_installed", "whisper_install_failed",
+        "transcription_empty", "subtitle_setup", "timeline_empty",
+    }
+    kind = None if skip_upstream else classify_run_upstream(error, status)
+    if kind:
+        result["upstream_error_type"] = kind
+    return result
+
 
 PRIVACY_FILE = "privacy.json"
 _initialized = False
@@ -110,13 +182,94 @@ def before_send(event: dict, hint: Optional[dict] = None) -> Optional[dict]:
                        "stacktrace": {"frames": frames}})
     if not values:
         return None  # Logging-only payloads can contain video text; do not send them.
+    if (event.get("tags") or {}).get("error_code") in UNREPORTED_STUDIO_ERROR_CODES:
+        return None
     clean["exception"] = {"values": values}
     kind, fingerprint = _import_monitoring_fields(event, hint)
+    if kind in UNREPORTED_IMPORT_FAILURE_KINDS:
+        return None
+    tags = event.get("tags") or {}
+    from backend.core.llm_telemetry import (
+        ASR_PROVIDERS, FAILURE_STAGES, MODEL_PATTERN, TELEMETRY_PROVIDERS,
+        hostname_of_base_url,
+    )
+    from backend.core.upstream_errors import UPSTREAM_ERROR_TYPES
+    allowed = {
+        "area": {"studio"}, "error_code": STUDIO_ERROR_CODES,
+        "phase": {"screening", "production", "render", "analysis", "dispatch", "vision_test", "rewrite", "auto_frame", "framing_install", "qa", "packaging_html", "packaging_runtime"},
+        "analysis_mode": {"subtitle", "visual"},
+        "goal": {"content", "highlight", "promo"},
+        "runtime": {"python"}, "app_mode": {"web", "desktop"},
+        "os": {"macos", "windows", "linux", "unknown"},
+        "arch": {"aarch64", "x86_64", "unknown"},
+        "build_environment": {"production", "development", "validation", "unknown"},
+        "telemetry_test": {"true"},
+        "pipeline_stage": PIPELINE_STAGES,
+        "upstream_error_type": UPSTREAM_ERROR_TYPES,
+        "failure_stage": FAILURE_STAGES,
+        "provider": TELEMETRY_PROVIDERS | ASR_PROVIDERS,
+    }
+    clean_tags = {key: value for key, value in tags.items()
+                  if key in allowed and isinstance(value, str) and value in allowed[key]}
+    model = tags.get("model")
+    if isinstance(model, str) and MODEL_PATTERN.fullmatch(model) and "sk-" not in model.lower():
+        clean_tags["model"] = model
+    host = tags.get("base_url_host")
+    if isinstance(host, str) and (host == "local" or hostname_of_base_url(host) == host):
+        clean_tags["base_url_host"] = host
+    status = tags.get("http_status")
+    if isinstance(status, str) and status.isdigit() and 400 <= int(status) <= 599:
+        clean_tags["http_status"] = status
+    user_id = _event_distinct_id(event)
+    if user_id:
+        clean["user"] = {"id": user_id}
     if kind:
-        clean["tags"] = {"import_failure": kind}
+        clean_tags["import_failure"] = kind
+    if clean_tags:
+        clean["tags"] = clean_tags
+    if clean_tags.get("area") == "studio" and clean_tags.get("error_code") in {"validation", "missing_resource", "authentication", "rate_limited", "refused", "llm_not_configured", "whisper_not_installed", "whisper_install_failed", "transcription_empty", "subtitle_setup", "timeline_empty"}:
+        clean["level"] = "warning"
+        clean["fingerprint"] = ["studio", clean_tags.get("phase", "unknown"), clean_tags["error_code"]]
     if fingerprint:
         clean["fingerprint"] = fingerprint
     return clean
+
+
+def sync_anonymous_user(distinct_id: str | None = None) -> None:
+    """Align Sentry user.id with the PostHog anonymous distinct_id. Id only."""
+    if not _initialized:
+        return
+    try:
+        from backend.services.studio.qa.telemetry import _analytics_allowed, stored_distinct_id
+        import sentry_sdk
+        value = distinct_id if isinstance(distinct_id, str) else stored_distinct_id()
+        # Identity updates may arrive in an API request. Worker threads need the
+        # process scope, not the transient request/isolation scope.
+        scope = sentry_sdk.get_global_scope()
+        if value and _ANONYMOUS_ID.fullmatch(value) and _analytics_allowed():
+            scope.set_user({"id": value})
+        else:
+            scope.set_user(None)
+    except Exception:  # noqa: BLE001 - identity sync cannot break crash reporting
+        logger.debug("Sentry anonymous user was not updated", exc_info=True)
+
+
+def _event_distinct_id(event: dict) -> str | None:
+    try:
+        from backend.services.studio.qa.telemetry import _analytics_allowed, stored_distinct_id
+    except Exception:
+        return None
+    if not _analytics_allowed():
+        return None
+    # Also recover identities written after SDK init, including worker processes.
+    stored = stored_distinct_id()
+    if stored:
+        return stored
+    user = event.get("user") if isinstance(event.get("user"), dict) else {}
+    candidate = user.get("id") if isinstance(user, dict) else None
+    if isinstance(candidate, str) and _ANONYMOUS_ID.fullmatch(candidate):
+        return candidate
+    return None
 
 
 def init_sentry(mode: str = "web") -> bool:
@@ -157,8 +310,60 @@ def init_sentry(mode: str = "web") -> bool:
             LoggingIntegration(level=logging.ERROR, event_level=logging.ERROR),
         ],
     )
-    sentry_sdk.set_tag("runtime", "python")
-    sentry_sdk.set_tag("app_mode", mode)
+    # Consent can first enable the SDK inside a settings request. Request-local
+    # tags disappear when that request exits; process identity belongs globally.
+    scope = sentry_sdk.get_global_scope()
+    scope.set_tag("runtime", "python")
+    scope.set_tag("app_mode", mode)
+    from backend.core.event_catalog import detect_os, detect_arch
+    scope.set_tag("os", detect_os())
+    scope.set_tag("arch", detect_arch())
+    build_environment = os.getenv("AUTOCLIP_BUILD_ENVIRONMENT", "unknown")
+    scope.set_tag("build_environment", build_environment)
+    if build_environment == "validation":
+        scope.set_tag("telemetry_test", "true")
     _initialized = True
+    sync_anonymous_user()
     logger.info("Sentry 已启用（backend）")
     return True
+
+
+def capture_studio_exception(error: Exception, phase: str, *, analysis_mode=None, goal=None):
+    """Report caught worker errors without allowing monitoring to fail the worker.
+
+    Consent is checked both here and in before_send. Scope is isolated so worker
+    threads cannot leak their phase into unrelated requests. All tags are filtered.
+    """
+    if not _initialized or not crash_reports_enabled():
+        return None
+    from backend.core.project_cancellation import ProjectDeleted
+    if isinstance(error, ProjectDeleted):
+        return None  # the user deleted the project mid-run: expected, not a crash (RC156 #12)
+    try:
+        code = studio_error_code(error)
+        if code in UNREPORTED_STUDIO_ERROR_CODES:
+            return None
+        import sentry_sdk
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("area", "studio")
+            scope.set_tag("phase", phase)
+            scope.set_tag("error_code", code)
+            stage = getattr(error, "stage", None)
+            if isinstance(stage, str) and stage in PIPELINE_STAGES:
+                scope.set_tag("pipeline_stage", stage)
+            if analysis_mode:
+                scope.set_tag("analysis_mode", analysis_mode)
+            if goal:
+                scope.set_tag("goal", goal)
+            try:
+                from backend.core.llm_telemetry import sentry_tags_for_error
+                for key, value in sentry_tags_for_error(error, phase).items():
+                    scope.set_tag(key, value)
+            except Exception:
+                pass
+            detail = getattr(error, "probe_detail", None)
+            if isinstance(detail, str) and detail:
+                scope.set_context("source_probe", {"stderr_tail": detail[-600:]})
+            return sentry_sdk.capture_exception(error)
+    except Exception:
+        return None

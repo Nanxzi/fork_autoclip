@@ -51,7 +51,7 @@ def test_visual_refinement_uses_valid_source_timestamps(root,monkeypatch):
     monkeypatch.setattr(intelligence,'_probe',lambda _: {'duration':30})
     monkeypatch.setattr(intelligence,'sample',lambda video,times,folder: calls.append(times) or [])
     responses=iter([{'events':[{'id':'e1','label':'避障','start':5,'end':20,'evidence':'障碍密集'}]}, {'events':[{'id':'r','label':'连续避障','start':6,'end':19,'evidence':'复核'}]}])
-    monkeypatch.setattr(intelligence,'vision_call',lambda _: next(responses))
+    monkeypatch.setattr(intelligence,'vision_call',lambda _, **_kwargs: next(responses))
     stages=[]
     events, coverage=intelligence.analyze(Path('unused'),Preferences(goal='highlight'),stages.append)
     assert stages==['扫描画面，寻找候选高光','复核首选高光的起止边界']
@@ -62,7 +62,7 @@ def test_visual_refinement_uses_valid_source_timestamps(root,monkeypatch):
 def test_visual_empty_evidence_is_not_fabricated(root,monkeypatch):
     monkeypatch.setattr(intelligence,'_probe',lambda _: {'duration':30})
     monkeypatch.setattr(intelligence,'sample',lambda *args: [])
-    monkeypatch.setattr(intelligence,'vision_call',lambda _: {'events':[]})
+    monkeypatch.setattr(intelligence,'vision_call',lambda _, **_kwargs: {'events':[]})
     with pytest.raises(ValueError,match='没有找到'): intelligence.analyze(Path('unused'),Preferences(goal='promo'))
 
 def test_settings_mask_key_preserve_and_clear(root,monkeypatch):
@@ -148,6 +148,18 @@ def client(root, source, monkeypatch):
     with TestClient(app) as c: yield c
     engine.dispose()
 
+def test_api_platform_strategies_distinguish_short_and_long_youtube(client):
+    response = client.get('/studio/platform-strategies')
+    assert response.status_code == 200
+    strategies = {strategy['id']: strategy for strategy in response.json()['strategies']}
+    assert strategies['youtube_shorts']['transport_platform'] == 'youtube'
+    assert strategies['youtube_shorts']['max_duration_sec'] == 180
+    assert strategies['douyin']['max_duration_sec'] is None
+    assert strategies['youtube_long']['transport_platform'] == 'youtube'
+    assert strategies['youtube_long']['min_recommended_duration_sec'] == 180
+    assert strategies['youtube_long']['aspect'] == 'landscape'
+
+
 def test_api_legacy_adapter_conflict_and_source(client):
     assert client.get('/studio/missing').status_code==404
     assert client.post('/studio/p1/drafts',json={'clip_ids':['missing'],'title':'No'}).status_code==404
@@ -194,7 +206,7 @@ def test_visual_import_worker_persists_project_status(client,root,source,monkeyp
     monkeypatch.setattr(intelligence,'ready',lambda:True)
     monkeypatch.setattr(jobs,'analyze',lambda *a: ([Scene(id='e1',label='真实事件',start=0,end=1)],{}))
     class Immediate:
-        def submit(self,fn,*args): fn(*args)
+        def submit(self,fn,*args,**kwargs): fn(*args,**kwargs)
     monkeypatch.setattr(jobs,'executor',Immediate())
     response=client.post('/studio/import',data={'goal':'highlight','name':'Visual upload'},files={'video':('game.mp4',source.read_bytes(),'video/mp4')})
     assert response.status_code==200,response.text
@@ -739,7 +751,7 @@ def test_export_dispatch_failure_is_retryable_and_preserves_success(root, monkey
     store.change('p1', lambda data: data['jobs'].append(previous))
     calls = []
     class Executor:
-        def submit(self, *args):
+        def submit(self, *args, **kwargs):
             calls.append(args)
             if len(calls) == 1:
                 raise RuntimeError('executor unavailable: private runtime details')
@@ -759,3 +771,33 @@ def test_export_dispatch_failure_is_retryable_and_preserves_success(root, monkey
     assert jobs.export('p1', Draft.model_validate(saved))['job_id'] == retry['job_id']
     assert len(calls) == 2  # retry accepted once; duplicate does not dispatch again
     assert len(store.read('p1')['jobs']) == 3
+
+
+def test_analysis_receipts_survive_new_plan_and_do_not_contain_user_content(root):
+    base = {'drafts': [], 'events': [], 'jobs': [], 'plan': {'id': 'old', 'mode': 'ai', 'instruction': 'private'},
+            'analysis': {'status': 'running', 'phase': 'production', 'run_id': 'run-old', 'instance': store.INSTANCE}}
+    store.write('p1', base)
+    store.change('p1', lambda d: d.update(analysis={'status': 'failed', 'error_code': 'llm_not_configured', 'error': 'private /file'}))
+    old = store.read('p1')['analysis_history'][0]
+    assert old['run_id'] == 'run-old'
+    assert old['analysis']['phase'] == 'production'
+    assert 'private' not in str(old)
+    store.change('p1', lambda d: d.update(plan={'id': 'new'}, analysis={'status': 'running', 'phase': 'screening', 'run_id': 'run-new', 'instance': store.INSTANCE}))
+    store.change('p1', lambda d: d.update(analysis={'status': 'awaiting_confirmation'}))
+    history = store.read('p1')['analysis_history']
+    assert [r['run_id'] for r in history] == ['run-old', 'run-new']
+    assert history[0] == old
+    store.change('p1', lambda d: d.update(another_field=True))
+    assert len(store.read('p1')['analysis_history']) == 2
+
+
+def test_restart_failure_is_preserved_when_immediately_rescreened(root):
+    state = {'drafts': [], 'events': [], 'jobs': [], 'plan': {'id': 'before'},
+             'analysis': {'status': 'running', 'phase': 'production', 'run_id': 'interrupted', 'instance': 'old-process'}}
+    store.write('p1', state)
+    store.change('p1', lambda d: d.update(plan={'id': 'after'}, analysis={
+        'status': 'running', 'phase': 'screening', 'run_id': 'retry', 'instance': store.INSTANCE}))
+    receipt = store.read('p1')['analysis_history'][0]
+    assert receipt['run_id'] == 'interrupted'
+    assert receipt['analysis']['status'] == 'failed'
+    assert receipt['plan']['id'] == 'before'
