@@ -85,7 +85,7 @@ def test_compatible_url_gains_v1_and_drops_chat_completions():
     ('/v1', '/v1'),
 ])
 @pytest.mark.parametrize('provider', ['gemini', 'compatible'])
-def test_gemini_validation_requests_use_the_shared_chat_root(monkeypatch, path, expected, provider):
+def test_gemini_validation_keeps_saved_root_and_selects_transport(monkeypatch, path, expected, provider):
     root = 'https://generativelanguage.googleapis.com'
     calls = []
 
@@ -96,6 +96,10 @@ def test_gemini_validation_requests_use_the_shared_chat_root(monkeypatch, path, 
                 assert 'x-goog-api-key' in headers
                 return _FakeResponse(200, {'models': [{'name': 'models/gemini-test'}]})
             return _FakeResponse(200, {'data': [{'id': 'gemini-test'}]})
+        if provider == 'gemini':
+            assert headers['x-goog-api-key'] == 'test-only-key'
+            assert 'Authorization' not in headers
+            return _FakeResponse(200, {'candidates': [{'content': {'parts': [{'text': 'ok'}]}, 'finishReason': 'STOP'}]})
         return _FakeResponse(200, {'choices': [{'message': {'content': 'ok'}}]})
 
     _patch_httpx(monkeypatch, handler)
@@ -104,9 +108,10 @@ def test_gemini_validation_requests_use_the_shared_chat_root(monkeypatch, path, 
         base_url_source='user', preset_version=1, api_key='test-only-key',
     ), 'gemini-test')
     assert result.ok
-    # P4 lists Gemini models natively; the chat probe uses the shared OpenAI root.
     models_url = root + expected.removesuffix('/openai') + '/models' + f'?pageSize={GEMINI_PAGE_SIZE}' if provider == 'gemini' else root + expected + '/models'
-    assert calls == [models_url, root + expected + '/chat/completions']
+    chat_url = root + expected.removesuffix('/openai') + '/models/gemini-test:generateContent' if provider == 'gemini' else root + expected + '/chat/completions'
+    assert calls == [models_url, chat_url]
+    assert result.normalized_base_url == root + expected
     assert root + '/v1beta/chat/completions' not in calls
 
 
@@ -246,7 +251,7 @@ def test_success_probes_with_about_sixteen_tokens_and_returns_models(monkeypatch
 
 
 @pytest.mark.parametrize('provider', ['gemini', 'compatible'])
-def test_gemini_native_models_and_shared_openai_chat_root(monkeypatch, provider):
+def test_gemini_legacy_root_is_normalized_without_changing_native_transport(monkeypatch, provider):
     calls = []
     root = 'https://generativelanguage.googleapis.com/v1beta/openai'
 
@@ -257,6 +262,8 @@ def test_gemini_native_models_and_shared_openai_chat_root(monkeypatch, provider)
                 assert 'x-goog-api-key' in headers
                 return _FakeResponse(200, {'models': [{'name': 'models/gemini-test'}]})
             return _FakeResponse(200, {'data': [{'id': 'gemini-test'}]})
+        if provider == 'gemini':
+            return _FakeResponse(200, {'candidates': [{'content': {'parts': [{'text': 'ok'}]}, 'finishReason': 'STOP'}]})
         return _FakeResponse(200, {'choices': [{'message': {'content': 'ok'}}]})
 
     _patch_httpx(monkeypatch, handler)
@@ -268,7 +275,8 @@ def test_gemini_native_models_and_shared_openai_chat_root(monkeypatch, provider)
     assert result.ok is True
     assert result.normalized_base_url == root
     models_url = root.removesuffix('/openai') + f'/models?pageSize={GEMINI_PAGE_SIZE}' if provider == 'gemini' else root + '/models'
-    assert calls == [('GET', models_url), ('POST', root + '/chat/completions')]
+    chat_url = root.removesuffix('/openai') + '/models/gemini-test:generateContent' if provider == 'gemini' else root + '/chat/completions'
+    assert calls == [('GET', models_url), ('POST', chat_url)]
 
 
 def test_http_test_endpoint_returns_classified_payload(monkeypatch):
@@ -1042,6 +1050,49 @@ def test_trial_run_context_error_fails_context(monkeypatch):
     assert result['trial_context_ok'] is False
     assert result['trial_json_ok'] is False
     assert result['trial_passed'] is False
+    assert result['trial_failure_reason'] == 'context_length'
+    assert result['trial_failure_status'] == 400
+
+
+def test_trial_run_reports_closed_set_failure_reasons(monkeypatch):
+    """#614 / Discussion #606: distinguish timeout, connection, http_error, invalid_json without raw provider prose."""
+    import httpx
+    from backend.services import provider_validation as pv
+
+    # 1) Timeout (e.g. local Ollama exceeding 90s)
+    def timeout_handler(method, url, headers, payload):
+        raise httpx.ReadTimeout('read timed out')
+    _patch_httpx(monkeypatch, timeout_handler)
+    res_timeout = pv.trial_run('http://localhost:11434/v1', '', 'qwen2.5:7b', sleep=lambda *_: None)
+    assert res_timeout['trial_passed'] is False
+    assert res_timeout['trial_failure_reason'] == 'timeout'
+    assert res_timeout['trial_failure_status'] is None
+
+    # 2) Connection drop
+    def conn_handler(method, url, headers, payload):
+        raise httpx.ConnectError('connection refused')
+    _patch_httpx(monkeypatch, conn_handler)
+    res_conn = pv.trial_run('http://localhost:11434/v1', '', 'qwen2.5:7b', sleep=lambda *_: None)
+    assert res_conn['trial_failure_reason'] == 'connection'
+    assert res_conn['trial_failure_status'] is None
+
+    # 3) HTTP 502 error
+    _patch_httpx(monkeypatch, lambda *a: _FakeResponse(502, {'error': {'message': 'secret upstream text'}}))
+    res_http = pv.trial_run('https://gw.example/v1', 'sk-x', 'm', sleep=lambda *_: None)
+    assert res_http['trial_failure_reason'] == 'http_error'
+    assert res_http['trial_failure_status'] == 502
+
+    # 4) Valid HTTP 200 but non-JSON reply
+    _patch_httpx(monkeypatch, lambda *a: _FakeResponse(200, {'choices': [{'message': {'content': 'plain text'}}]}))
+    res_json = pv.trial_run('https://gw.example/v1', 'sk-x', 'm', sleep=lambda *_: None)
+    assert res_json['trial_failure_reason'] == 'invalid_json'
+    assert res_json['trial_failure_status'] is None
+
+    # 5) Pure 429 rate-limit leaves trial_failure_reason empty (rate line already explains it)
+    _patch_httpx(monkeypatch, lambda *a: _FakeResponse(429, {'error': {'message': 'too many requests'}}))
+    res_429 = pv.trial_run('https://gw.example/v1', 'sk-x', 'm', sleep=lambda *_: None)
+    assert res_429['trial_rate_limited'] is True
+    assert res_429['trial_failure_reason'] == ''
 
 
 def test_validate_connection_with_probe_quick_skips_trial(monkeypatch):
@@ -1091,3 +1142,82 @@ def test_validate_connection_with_probe_trial_merges_flags(monkeypatch):
     assert result.trial_passed is True
     api = result.as_api()
     assert api['trial_estimate_requests'] == 2
+
+
+def test_analysis_rejects_image_model_without_probe(monkeypatch):
+    """#565: seedream in the analysis slot must not chat-probe or paint trial lights."""
+    from backend.services import provider_validation as pv
+
+    calls = {'probe': 0, 'trial': 0, 'models': 0}
+
+    def boom_probe(*a, **k):
+        calls['probe'] += 1
+        raise AssertionError('_probe must not run for image models')
+
+    def boom_trial(*a, **k):
+        calls['trial'] += 1
+        raise AssertionError('trial_run must not run for image models')
+
+    def boom_models(*a, **k):
+        calls['models'] += 1
+        raise AssertionError('/models must not run for image models in analysis')
+
+    monkeypatch.setattr(pv, '_probe', boom_probe)
+    monkeypatch.setattr(pv, 'trial_run', boom_trial)
+    monkeypatch.setattr(pv, '_get_models', boom_models)
+
+    seedream = 'doubao-seedream-5-0-flash-260915'
+    result = pv.validate_connection_with_probe(
+        _connection(provider='seed'), seedream, purpose='analysis', probe_kind='trial',
+    )
+    assert result.ok is False
+    assert result.error_type == 'unknown'
+    assert result.error_code == 'image_model_in_analysis'
+    assert result.hint_key == pv.IMAGE_MODEL_IN_ANALYSIS_HINT
+    assert result.hint_key == '该模型是生图模型，只能用于封面，不能做分析。'
+    # Fixed sentence must not embed the model id (breaks non-zh i18n lookup).
+    assert 'seedream' not in result.hint_key.lower()
+    assert result.trial_passed is None
+    assert result.trial_context_ok is None
+    assert result.trial_rate_limited is None
+    assert result.trial_json_ok is None
+    assert calls == {'probe': 0, 'trial': 0, 'models': 0}
+
+    quick = pv.validate_connection(_connection(provider='seed'), seedream, purpose='analysis')
+    assert quick.ok is False and quick.error_code == 'image_model_in_analysis'
+    assert calls == {'probe': 0, 'trial': 0, 'models': 0}
+
+
+def test_cover_seedream_still_validates_without_image_model_block(monkeypatch):
+    """Cover purpose must keep accepting seedream (access check only, no chat)."""
+    from backend.services import provider_validation as pv
+
+    def handler(method, url, headers, payload):
+        if method == 'GET':
+            return _FakeResponse(200, {'data': [{'id': 'doubao-seedream-5-0-flash-260915'}]})
+        raise AssertionError('cover must not chat-probe')
+
+    _patch_httpx(monkeypatch, handler)
+    result = pv.validate_connection(
+        _connection(provider='seed'), 'doubao-seedream-5-0-flash-260915', purpose='cover',
+    )
+    assert result.ok is True
+    assert result.error_type == ''
+
+
+@pytest.mark.parametrize('stage', ['GET', 'POST'])
+@pytest.mark.parametrize('code, expected', [
+    ('insufficient_quota', 'insufficient_quota'),
+    ('rate_limit_exceeded', 'rate_limited'),
+])
+def test_settings_probe_distinguishes_quota_and_rate_429(monkeypatch, stage, code, expected):
+    def handler(method, url, headers, body):
+        if method == stage:
+            return _FakeResponse(429, {'error': {'code': code}})
+        return _FakeResponse(200, {'data': [{'id': 'gpt-5-mini'}]})
+
+    _patch_httpx(monkeypatch, handler)
+    result = validate_connection(_connection(), 'gpt-5-mini').as_api()
+    assert result['http_status'] == 429
+    assert result['error_type'] == expected
+    assert result['result'] == ('transient' if expected == 'rate_limited' else 'failed')

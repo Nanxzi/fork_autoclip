@@ -21,7 +21,7 @@
 
 **[公式サイト](https://zhouxiaoka.github.io/autoclip_intro/)** · **[デスクトップ版を入手](https://github.com/zhouxiaoka/autoclip/releases/latest)** · [事例](https://zhouxiaoka.github.io/autoclip_intro/cases/) · [研究](docs/research/2026-10-what-drives-views/article-en.md) · [クイックスタート](#クイックスタート) · [ドキュメント](#ドキュメント) · [不具合報告](https://github.com/zhouxiaoka/autoclip/issues/new/choose)
 
-[简体中文](README.md) · [English](README-EN.md) · **日本語** · [한국어](README-KO.md) · [Español](README-ES.md) · [Português](README-PT.md) · [Русский](README-RU.md) · [Français](README-FR.md)
+[简体中文](README.md) · [English](README-EN.md) · **日本語** · [한국어](README-KO.md) · [Español](README-ES.md) · [Português](README-PT.md) · [Русский](README-RU.md) · [Français](README-FR.md) · [Türkçe](README-TR.md)
 
 </div>
 
@@ -211,7 +211,7 @@
 3. **リンクと投稿先を選ぶ。** 字幕付きの対談やポッドキャストで試し、縦型レイアウトを選択。字幕がなければ設定で Whisper / SenseVoice を準備、またはクラウド文字起こしを設定。
 4. **確認して保存。** 字幕・構図・内容の完全性を確認し、投稿パックを保存または接続済みアカウントへ投稿。必要に応じて追加候補を生成。
 
-Intel Mac / Linux は Docker または CLI を利用できます。必要環境・初回起動・検証範囲は [インストールガイド](docs/USER_INSTALLATION_GUIDE.en.md) と [最新 Release](https://github.com/zhouxiaoka/autoclip/releases/latest) を参照。
+Intel Mac / Linux は Docker または CLI を利用できます。デスクトップインストーラーは現在未署名のため（[#119](https://github.com/zhouxiaoka/autoclip/issues/119)）、Windows SmartScreen やセキュリティソフトが警告を出す場合があります。公開 GitHub Actions（`Desktop Build`）でビルドされており、Release 添付の `build-provenance.json` で SHA-256 を検証できます（Docker / CLI / ソース実行も可）。必要環境・初回起動・検証範囲は [インストールガイド](docs/USER_INSTALLATION_GUIDE.en.md) と [最新 Release](https://github.com/zhouxiaoka/autoclip/releases/latest) を参照。
 
 [インストールガイド](docs/USER_INSTALLATION_GUIDE.en.md) · [トラブルシュート](docs/FAQ.en.md)
 
@@ -295,31 +295,6 @@ Docker 内の `localhost` はコンテナ自身です。ホストのモデルに
 <table>
   <tr>
     <td align="center" width="140">
-      <a href="https://88api.ai/sign-up?aff=2PIc"><img src="docs/sponsors/88api-logo.jpg" alt="88API" width="88"></a><br>
-      <a href="https://88api.ai/sign-up?aff=2PIc"><strong>88API</strong></a>
-    </td>
-    <td>
-      <strong>88API Tokenプラットフォーム</strong> のご支援に感謝します！GPT、Claude、Gemini、Grok、DeepSeek、Kimi、GLM を集約し、字幕分析・見どころ選定・タイトル生成に活用できます。<br>
-      🎨 <strong>マルチメディア</strong>：GPT-Image、Seedance、Veo、MiniMax Hailuo H3、Kling、Whisper、TTS などの画像・動画・音声モデルを提供。AutoClip は対応する分析・カバー画像生成・文字起こし API を利用できます。<br>
-      🏷️ <strong>サービスと決済</strong>：提携先によると海外法人が運営し、有人サポート・請求書・1:1 のチャージ比率を提供。条件はプラットフォームをご確認ください。<br>
-      🎁 <strong>新規登録特典</strong>：<a href="https://88api.ai/sign-up?aff=2PIc">専用紹介リンク</a>から登録するとモデル検証用の体験クレジットを受け取れます。適用条件はキャンペーンページをご確認ください。 <a href="docs/88API_SETUP.en.md">設定ガイド（英語）</a>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="140">
-      <a href="https://www.infistar.cc/register?aff=XLK3BCM6&amp;ref_source=link"><img src="docs/sponsors/infistar-logo.svg" alt="Infistar" width="88"></a><br>
-      <a href="https://www.infistar.cc/register?aff=XLK3BCM6&amp;ref_source=link"><strong>Infistar.cc</strong></a>
-    </td>
-    <td>
-      AutoClip を支援する <strong>Infistar.cc</strong> に感謝します！長い動画の字幕分析、見どころの選定、タイトル生成に利用できる複数モデルの API サービスです。<br>
-      ⚙️ <strong>互換 API で設定</strong>：AutoClip で OpenAI 互換の提供元を選び、Base URL、API キー、利用可能なモデルを入力します。<br>
-      🧩 <strong>モデルを選択</strong>：提供元は Claude、GPT、Gemini、DeepSeek などを取り扱っています。互換エンドポイントに対応するモデルで、字幕分析や見どころ選定の結果を比較できます。<br>
-      🏷️ <strong>料金とサービス</strong>：提供元の案内では、一部モデルは<strong>公式定価の 1% から</strong>利用でき、人民元決済、請求書発行、モデルの真正性確認に対応しています。対象モデル、料金、条件は提供元のページをご確認ください。<br>
-      🎁 <strong>AutoClip 限定特典</strong>：新規ユーザーは<a href="https://www.infistar.cc/register?aff=XLK3BCM6&amp;ref_source=link">専用紹介リンク</a>から登録すると <strong>$5 のお試しクレジット</strong>を受け取れます。適用条件はキャンペーンページをご確認ください。 <a href="docs/INFISTAR_SETUP.en.md">設定ガイド（英語）</a>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="140">
       <a href="https://go.apimart.ai/tw-autoclip"><img src="docs/sponsors/apimart.png" alt="APIMart" width="88"></a><br>
       <a href="https://go.apimart.ai/tw-autoclip"><strong>APIMart</strong></a>
     </td>
@@ -327,7 +302,7 @@ Docker 内の `localhost` はコンテナ自身です。ホストのモデルに
       本プロジェクトをスポンサーしてくださった <strong>APIMart</strong> に感謝します！<strong>APIMart</strong> は AI 画像・動画生成向けの低価格 API プラットフォームです。GPT-Image-2 は <strong>$0.006/image</strong> から、1 ドルで <strong>160</strong> 枚以上の画像を生成できます。画像と動画を一つの非同期 API で扱えます。タスクを送信して ID を受け取り、ポーリングまたはコールバックで結果を取得します。タイムアウトなしで数万枚を一括処理でき、コードを変えずにモデルを切り替えられます。月額料金のない従量課金です。<a href="https://go.apimart.ai/tw-autoclip">こちらから登録</a>して始められます。
     </td>
   </tr>
-</table>
+  </table>
 
 ## よくある質問
 

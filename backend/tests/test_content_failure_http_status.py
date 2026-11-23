@@ -15,6 +15,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.models.base import Base
 from backend.models.project import Project, ProjectStatus
+from backend.models.task import Task, TaskStatus
 
 SRT = "1\n00:00:00,000 --> 00:00:05,000\n第一句\n\n2\n00:00:05,000 --> 00:00:10,000\n第二句\n"
 
@@ -30,7 +31,7 @@ class ProviderError(openai.APIStatusError):
 
 
 @pytest.fixture
-def pipeline(tmp_path, monkeypatch):
+def pipeline(tmp_path, monkeypatch, request):
     monkeypatch.setenv('AUTOCLIP_DATA_DIR', str(tmp_path))
     monkeypatch.setenv('AUTOCLIP_APP_DIR', str(tmp_path))
     monkeypatch.delenv('AUTOCLIP_LLM_CACHE_DIR', raising=False)
@@ -63,7 +64,8 @@ def pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, 'clear_progress', lambda pid: None)
     monkeypatch.setattr(mod, 'emit_progress', lambda *a, **k: None)
     monkeypatch.setattr(mod.SimplePipelineAdapter, '_prompt_files', lambda self, project_dir: {})
-    monkeypatch.setattr(mod.SimplePipelineAdapter, '_find_clips_in_one_pass', lambda *a: None)
+    if not getattr(request, 'param', False):
+        monkeypatch.setattr(mod.SimplePipelineAdapter, '_find_clips_in_one_pass', lambda *a: None)
     info = {'provider': 'dashscope', 'model': 'qwen-plus', 'available': True, 'display_name': '通义千问'}
     monkeypatch.setattr(llm_manager, 'get_llm_manager', lambda: SimpleNamespace(get_current_provider_info=lambda: info))
     video = tmp_path / 'source.mp4'
@@ -74,6 +76,39 @@ def pipeline(tmp_path, monkeypatch):
 
 def _outline_raises(mod, monkeypatch, error):
     monkeypatch.setattr(mod, 'run_step1_outline', lambda *a, **k: (_ for _ in ()).throw(error))
+
+
+@pytest.mark.parametrize('pipeline', [True], indirect=True)
+@pytest.mark.parametrize('status,kind', [(402, 'insufficient_quota'), (401, 'invalid_key'), (404, 'bad_endpoint')])
+def test_one_pass_permanent_failure_survives_task_persistence(pipeline, monkeypatch, status, kind):
+    from backend.core.llm_telemetry import log_safe_exception
+    from backend.core.sentry_setup import studio_failure_context
+    from backend.services.studio import jobs, intelligence
+    from backend.tasks import processing
+    mod, video = pipeline
+    calls = []
+    original = ProviderError('controlled failure', status)
+    original.body = {'error': {'code': kind, 'message': kind}}
+    error = log_safe_exception(original)
+    def request(*args):
+        calls.append(1)
+        raise error
+    monkeypatch.setattr(intelligence, 'text_json', request)
+    monkeypatch.setattr(mod, 'run_step1_outline', lambda *a, **k: pytest.fail('must not start legacy calls'))
+    with pytest.raises(RuntimeError) as caught:
+        jobs.run_content('p', video)
+    context = studio_failure_context(caught.value, 'production')
+    assert context['http_status'] == status
+    assert context['upstream_error_type'] == kind
+    assert calls == [1]
+    with processing.session_scope() as session:
+        task = session.query(Task).filter(Task.project_id == 'p').one()
+        assert task.status == TaskStatus.FAILED
+        assert task.result_data['http_status'] == status
+        assert task.result_data['attribution']['upstream_error_type'] == kind
+        # Studio owns the enclosing generation; a failed child must not prematurely
+        # overwrite its status before Studio records the final generation outcome.
+        assert session.get(Project, 'p').status == ProjectStatus.PROCESSING
 
 
 def _wrapped_500():
@@ -200,3 +235,93 @@ def test_r28_i450_an_uncoded_wrapper_over_a_bare_status_is_not_a_model_failure(p
 
     assert raised.value.code != 'provider_error'
     assert 'upstream_error_type' not in studio_failure_context(raised.value, 'production')
+
+
+@pytest.mark.parametrize('pipeline', [True], indirect=True)
+@pytest.mark.parametrize('status,kind,expected_code', [
+    (401, 'invalid_key', 'llm_auth_invalid'),
+    (402, 'insufficient_quota', 'provider_error'),
+    (404, 'bad_endpoint', 'provider_error'),
+    (429, 'rate_limited', 'rate_limited'),
+])
+def test_one_pass_provider_failure_becomes_coded_analyze_failure_without_logging_exception(
+    pipeline, monkeypatch, caplog, status, kind, expected_code,
+):
+    """PYTHON-FASTAPI-67: one-pass clip_finder _LogSafeLLMError must become a coded ANALYZE
+    PipelineFailure and never hit logger.exception (which bypassed Sentry tags via LoggingIntegration)."""
+    import logging
+    from backend.core.llm_telemetry import _LogSafeLLMError, log_safe_exception
+    from backend.core.sentry_setup import studio_error_code, studio_failure_context
+    from backend.pipeline import clip_finder
+    from backend.pipeline.failures import PipelineFailure
+    from backend.services.studio import intelligence, jobs
+
+    mod, video = pipeline
+    monkeypatch.setattr(clip_finder, 'backoff_seconds', lambda *a: 0)
+    original = ProviderError('controlled provider failure', status)
+    original.body = {'error': {'code': kind, 'message': kind}}
+    safe = log_safe_exception(original)
+
+    def request(*args):
+        raise safe
+
+    monkeypatch.setattr(intelligence, 'text_json', request)
+    monkeypatch.setattr(mod, 'run_step1_outline', lambda *a, **k: pytest.fail('must not start legacy calls'))
+
+    with caplog.at_level(logging.ERROR, logger='backend.services.simple_pipeline_adapter'):
+        with pytest.raises(PipelineFailure) as caught:
+            jobs.run_content('p', video)
+
+    assert caught.value.stage == 'ANALYZE'
+    assert studio_error_code(caught.value) == expected_code
+    assert '流水线处理失败:' not in str(caught.value)
+    context = studio_failure_context(caught.value, 'production')
+    assert context['http_status'] == status
+    assert context['upstream_error_type'] == kind
+    # No ERROR log record may attach _LogSafeLLMError exc_info (would fire Sentry LoggingIntegration).
+    leaked = [
+        rec for rec in caplog.records
+        if rec.levelno >= logging.ERROR and rec.exc_info and isinstance(rec.exc_info[1], _LogSafeLLMError)
+    ]
+    assert leaked == []
+
+
+def test_before_send_drops_tagless_logging_event_for_expected_log_safe_llm_error(monkeypatch):
+    """Defense-in-depth for PYTHON-FASTAPI-67: LoggingIntegration sends _LogSafeLLMError without tags."""
+    from backend.core import sentry_setup
+    from backend.core.llm_telemetry import log_safe_exception
+
+    monkeypatch.setattr(sentry_setup, 'crash_reports_enabled', lambda: True)
+    for status, kind in ((401, 'invalid_key'), (402, 'insufficient_quota'), (429, 'rate_limited')):
+        original = ProviderError('controlled failure', status)
+        original.body = {'error': {'code': kind, 'message': kind}}
+        safe = log_safe_exception(original)
+        event = {
+            'logger': 'backend.services.simple_pipeline_adapter',
+            'exception': {'values': [{'type': '_LogSafeLLMError', 'value': str(safe), 'stacktrace': {'frames': []}}]},
+            'tags': {'runtime': 'python', 'os': 'windows'},
+        }
+        assert sentry_setup.before_send(event, {'exc_info': (type(safe), safe, None)}) is None
+
+    # An unrecognized _LogSafeLLMError without an expected upstream status/type must still be reported.
+    unknown_safe = log_safe_exception(RuntimeError('unrecognized internal failure'))
+    event = {
+        'logger': 'backend.services.simple_pipeline_adapter',
+        'exception': {'values': [{'type': '_LogSafeLLMError', 'value': str(unknown_safe), 'stacktrace': {'frames': []}}]},
+        'tags': {'runtime': 'python', 'os': 'windows'},
+    }
+    assert sentry_setup.before_send(event, {'exc_info': (type(unknown_safe), unknown_safe, None)}) is not None
+
+
+@pytest.mark.parametrize('pipeline', [True], indirect=True)
+def test_one_pass_local_programming_bug_stays_unexpected(pipeline, monkeypatch):
+    from backend.core.sentry_setup import studio_error_code
+    from backend.pipeline.failures import PipelineFailure
+    from backend.services.studio import intelligence, jobs
+
+    mod, video = pipeline
+    monkeypatch.setattr(intelligence, 'text_json', lambda *args: (_ for _ in ()).throw(KeyError('missing_key')))
+    with pytest.raises(RuntimeError) as caught:
+        jobs.run_content('p', video)
+    assert not isinstance(caught.value, PipelineFailure)
+    assert studio_error_code(caught.value) == 'unexpected'

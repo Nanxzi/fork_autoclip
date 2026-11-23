@@ -11,8 +11,12 @@ from enum import Enum
 from dataclasses import dataclass
 from pathlib import Path
 
+from backend.core import gemini_transport
+from backend.core.failure_attribution import ProviderTransportError
+from backend.core.llm_retry import retry_after_from_error
 from backend.core.llm_telemetry import hostname_of_base_url, sanitize_exception_text, sanitize_model, log_safe_exception
 from backend.core.failure_logging import failure_logger
+from backend.core.upstream_errors import http_error_parts
 
 logger = failure_logger(__name__)
 
@@ -371,6 +375,8 @@ def deepseek_chat_kwargs(base_url: Optional[str], request: Dict[str, Any]) -> Di
 # - 开源 Qwen3（qwen3-32b 等）与 Omni 系列另有流式限制，不碰；
 # - 不在清单里的型号、不是百炼地址的兼容接口（中转 / 代理 / 本地），请求体一律不变。
 QWEN_HYBRID_THINKING_MODELS = frozenset({
+    # Qwen4
+    "qwen4-max",
     # Qwen3.8
     "qwen3.8-max", "qwen3.8-max-0902", "qwen3.8-flash", "qwen3.8-27b",
     # Qwen3.7（qwen3.7-max-preview / qwen3.7-max-2026-05-17 仅思考，不在这里）
@@ -415,9 +421,77 @@ def dashscope_chat_kwargs(base_url: Optional[str], request: Dict[str, Any]) -> D
     return guarded
 
 
+_KNOWN_THINKING_RELAY_HOSTS = frozenset({
+    "apimart.ai",
+    "88api.ai",
+    "infistar.ai",
+    "infistar.cc",
+    "siliconflow.cn",
+    "openrouter.ai",
+})
+
+
+def is_known_thinking_relay(base_url: Optional[str]) -> bool:
+    """Known preset OpenAI-compatible gateways that route Qwen/DeepSeek hybrid thinking models."""
+    from urllib.parse import urlparse
+    raw = (base_url or "").strip()
+    if not raw:
+        return False
+    host = (urlparse(raw if "://" in raw else "https://" + raw).hostname or "").lower()
+    return any(host == suffix or host.endswith("." + suffix) for suffix in _KNOWN_THINKING_RELAY_HOSTS)
+
+
+def relay_thinking_chat_kwargs(base_url: Optional[str], request: Dict[str, Any]) -> Dict[str, Any]:
+    """Disable default deep thinking for allowlisted Qwen/DeepSeek models on known preset relays.
+
+    Unknown custom proxies remain unchanged so strict proxies never receive unexpected keys.
+    If a known relay rejects the thinking parameter with HTTP 400, OpenAIProvider.call() strips
+    it and retries once.
+    """
+    if not is_known_thinking_relay(base_url):
+        return request
+    raw_model = (request.get("model") or "").strip().lower()
+    bare_model = raw_model.rsplit("/", 1)[-1]
+    if bare_model in QWEN_HYBRID_THINKING_MODELS:
+        guarded = dict(request)
+        extra = dict(guarded.get("extra_body") or {})
+        extra.setdefault("enable_thinking", False)
+        guarded["extra_body"] = extra
+        return guarded
+    if bare_model.startswith("deepseek-") and "reasoner" not in bare_model and "r1" not in bare_model and "thinking" not in bare_model:
+        guarded = dict(request)
+        extra = dict(guarded.get("extra_body") or {})
+        extra.setdefault("thinking", {"type": "disabled"})
+        guarded["extra_body"] = extra
+        if guarded.get("max_tokens") is None:
+            guarded["max_tokens"] = DEEPSEEK_COMPLETION_TOKEN_CAP
+        return guarded
+    return request
+
+
+def _strip_thinking_extra_body(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    extra = payload.get("extra_body")
+    if not isinstance(extra, dict) or not any(k in extra for k in ("enable_thinking", "thinking")):
+        return None
+    stripped_extra = {k: v for k, v in extra.items() if k not in ("enable_thinking", "thinking")}
+    cleaned = dict(payload)
+    if stripped_extra:
+        cleaned["extra_body"] = stripped_extra
+    else:
+        cleaned.pop("extra_body", None)
+    return cleaned
+
+
+def _rejects_thinking_param(error: Any) -> bool:
+    if getattr(error, "status_code", None) != 400:
+        return False
+    text = str(error or "").lower()
+    return any(tok in text for tok in ("enable_thinking", "thinking", "extra_body", "unrecognized", "unknown parameter", "unsupported"))
+
+
 def guarded_chat_kwargs(base_url: Optional[str], request: Dict[str, Any]) -> Dict[str, Any]:
-    """所有 OpenAI 兼容文字请求都经过这里：DeepSeek 与百炼 Qwen 的思考开关。"""
-    return dashscope_chat_kwargs(base_url, deepseek_chat_kwargs(base_url, request))
+    """所有 OpenAI 兼容文字请求都经过这里：DeepSeek、百炼 Qwen 与已知预设中转站的思考开关。"""
+    return relay_thinking_chat_kwargs(base_url, dashscope_chat_kwargs(base_url, deepseek_chat_kwargs(base_url, request)))
 
 
 def http_chat_body(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -563,22 +637,35 @@ class OpenAIProvider(LLMProvider):
             # can; a refusal or a single JSON body is assembled the same way.
             payload["stream"] = True
             from backend.core.llm_stream import collect_sdk, create_openai_chat
+            from backend.core.llm_usage import current_stage
             request_timeout = _budget_request_timeout(LLM_READ_TIMEOUT_SEC)
+            client = self.client
+            if request_timeout is not None and current_stage() == 'packaging':
+                # SDK retries reuse the original read timeout. A second POST can consume
+                # the time reserved for captions before a stream handle even exists.
+                client = client.with_options(max_retries=0)
             try:
                 response = create_openai_chat(
-                    self.client, payload, request_timeout, lambda: _budget_request_timeout(LLM_READ_TIMEOUT_SEC))
-            except Exception as error:  # noqa: BLE001 - only the max_tokens 400 is retried
-                if payload.get("max_tokens") is None or getattr(error, "status_code", None) != 400 \
-                        or not asks_for_max_completion_tokens(error):
+                    client, payload, request_timeout, lambda: _budget_request_timeout(LLM_READ_TIMEOUT_SEC))
+            except Exception as error:  # noqa: BLE001 - retry targeted HTTP 400 compatibility rejections once
+                retry_payload = None
+                if payload.get("max_tokens") is not None and getattr(error, "status_code", None) == 400 \
+                        and asks_for_max_completion_tokens(error):
+                    retry_payload = to_max_completion_tokens(payload)
+                    logger.info("模型 %s 不支持 max_tokens，改用 max_completion_tokens 重试一次", sanitize_model(model))
+                elif _rejects_thinking_param(error):
+                    retry_payload = _strip_thinking_extra_body(payload)
+                    if retry_payload is not None:
+                        logger.info("接口拒绝关闭思考参数，移除 thinking/enable_thinking 后重试一次 (%s)", sanitize_model(model))
+                if retry_payload is None:
                     raise
                 # The manager reserved the first SDK call, not this compatibility
                 # resend. Reserve its SDK retries too before issuing another request.
                 from backend.core.llm_degrade import consume_chunk_call
                 if not consume_chunk_call():
                     raise
-                logger.info("模型 %s 不支持 max_tokens，改用 max_completion_tokens 重试一次", sanitize_model(model))
                 response = create_openai_chat(
-                    self.client, to_max_completion_tokens(payload),
+                    client, retry_payload,
                     _budget_request_timeout(LLM_READ_TIMEOUT_SEC),
                     lambda: _budget_request_timeout(LLM_READ_TIMEOUT_SEC))
             collected = collect_sdk(response)
@@ -658,64 +745,56 @@ class GeminiProvider(LLMProvider):
     
     def __init__(self, api_key: str, model_name: str = "gemini-3.8-flash", **kwargs):
         super().__init__(api_key, model_name, **kwargs)
-        try:
-            # New unified Google GenAI SDK (replaces the deprecated
-            # google-generativeai package).
-            from google import genai
-            self.client = genai.Client(api_key=api_key)
-        except ImportError:
-            raise ImportError("请安装google-genai: pip install google-genai")
+        self.base_url = kwargs.get('base_url') or 'https://generativelanguage.googleapis.com/v1beta'
 
     def call(self, prompt: str, input_data: Any = None, **kwargs) -> LLMResponse:
         """调用Gemini API"""
+        import requests
+
         try:
             full_input = self._build_full_input(prompt, input_data)
 
-            # Map a max-tokens hint onto the new SDK's config object if present.
-            config = None
-            max_tokens = kwargs.get("max_tokens") or kwargs.get("max_output_tokens")
-            if max_tokens:
-                from google.genai import types
-                config = types.GenerateContentConfig(max_output_tokens=max_tokens)
-
             model = self.request_model()
-            from backend.core.llm_degrade import consume_chunk_call
-            from backend.core.llm_stream import StreamRejected, collect_sdk, exception_rejects_stream
-            method = getattr(self.client.models, "generate_content_stream", None)
-            if method is not None:
-                try:
-                    collected = collect_sdk(method(model=model, contents=full_input, config=config))
-                    return LLMResponse(
-                        content=collected.content if collected.content is not None else "",
-                        model=model,
-                        finish_reason=collected.finish_reason,
-                    )
-                except StreamRejected as rejected:
-                    if not consume_chunk_call():
-                        raise rejected.error
-                    logger.info("上游不接受 stream，改回整包响应再试一次")
-                except Exception as error:  # noqa: BLE001 - only a stream refusal falls back
-                    if not exception_rejects_stream(error):
-                        raise
-                    if not consume_chunk_call():
-                        raise
-                    logger.info("上游不接受 stream，改回整包响应再试一次")
-            response = self.client.models.generate_content(
-                model=model,
-                contents=full_input,
-                config=config,
-            )
-
+            payload = {
+                'model': model,
+                'messages': [{'role': 'user', 'content': full_input}],
+                'temperature': kwargs.get('temperature'),
+                'top_p': kwargs.get('top_p'),
+                'max_tokens': kwargs.get('max_tokens'),
+                'max_completion_tokens': kwargs.get('max_completion_tokens'),
+                'response_format': kwargs.get('response_format'),
+            }
+            url, headers, body = gemini_transport.request(self.base_url, self.api_key, payload)
+            from backend.core.job_budget import clip_job_read_timeout
+            from backend.core.llm_stream import budget_watch
+            timeout = clip_job_read_timeout(LLM_READ_TIMEOUT_SEC)
+            with requests.post(url, headers=headers, json=body,
+                               auth=gemini_transport.native_auth,
+                               timeout=(min(LLM_CONNECT_TIMEOUT_SEC, timeout), timeout), stream=True) as response:
+                with budget_watch(response):
+                    response_body = response.content
+                    response.raise_for_status()
+                    result = gemini_transport.completion(json.loads(response_body))
+            choice = result['choices'][0]
             return LLMResponse(
-                content=response.text,
+                content=choice['message']['content'],
                 model=model,
-                finish_reason=getattr(response, 'finish_reason', None)
+                usage=result['usage'],
+                finish_reason=choice['finish_reason'],
             )
 
         except Exception as e:
             from backend.core.job_budget import promote_if_budget_spent
             promote_if_budget_spent(e)
             _attach_gemini_error_body(e)
+            if isinstance(e, (requests.Timeout, requests.ConnectionError, requests.HTTPError)):
+                status, body = http_error_parts(e)
+                transport = ProviderTransportError(type(e).__name__, http_status=status,
+                                                   timed_out=isinstance(e, requests.Timeout))
+                transport.body = body if status is not None else (
+                    'timeout' if isinstance(e, requests.Timeout) else 'connection error')
+                transport.retry_after = retry_after_from_error(e)
+                e = transport
             logger.error(f"Gemini调用失败: {sanitize_exception_text(e)}")
             raise log_safe_exception(e) from None
     

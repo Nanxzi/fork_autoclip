@@ -103,3 +103,55 @@ test('applyValidation persists trial_* on connection for F5', () => {
   // Connection still validated ok — yellow badge only.
   assert.equal(row.validation_status === 'failed', false)
 })
+
+test('trialLines empty when ok is false even if probe_kind is trial', () => {
+  assert.deepEqual(plain(trial.trialLines({
+    ok: false,
+    probe_kind: 'trial',
+    trial_context_ok: false,
+    trial_rate_limited: false,
+    trial_json_ok: false,
+  })), [])
+  assert.deepEqual(plain(trial.trialLines({
+    success: false,
+    probe_kind: 'trial',
+    trial_context_ok: false,
+    trial_rate_limited: false,
+    trial_json_ok: false,
+  })), [])
+  assert.equal(trial.trialLines({
+    ok: true,
+    probe_kind: 'trial',
+    trial_context_ok: true,
+    trial_rate_limited: false,
+    trial_json_ok: true,
+  }).length, 3)
+})
+
+test('trialFailureDetail maps closed-set failure reasons and suppresses passed/quick/ok=false', () => {
+  assert.equal(trial.trialFailureDetail(null), null)
+  assert.equal(trial.trialFailureDetail({ probe_kind: 'quick', trial_failure_reason: 'timeout' }), null)
+  assert.equal(trial.trialFailureDetail({ ok: false, probe_kind: 'trial', trial_failure_reason: 'timeout' }), null)
+  assert.equal(trial.trialFailureDetail({ ok: true, probe_kind: 'trial', trial_passed: true, trial_failure_reason: 'timeout' }), null)
+
+  const timeout = plain(trial.trialFailureDetail({
+    ok: true, probe_kind: 'trial', trial_passed: false, trial_failure_reason: 'timeout',
+  }))
+  assert.match(timeout.key, /超时/)
+
+  const httpWithStatus = plain(trial.trialFailureDetail({
+    ok: true, probe_kind: 'trial', trial_passed: false, trial_failure_reason: 'http_error', trial_failure_status: 502,
+  }))
+  assert.equal(httpWithStatus.status, 502)
+  assert.match(httpWithStatus.key, /HTTP \{\{status\}\}/)
+
+  const httpNoStatus = plain(trial.trialFailureDetail({
+    ok: true, probe_kind: 'trial', trial_passed: false, trial_failure_reason: 'http_error', trial_failure_status: 200,
+  }))
+  assert.equal(httpNoStatus.status, undefined)
+
+  const json = plain(trial.trialFailureDetail({
+    ok: true, probe_kind: 'trial', trial_passed: false, trial_failure_reason: 'invalid_json',
+  }))
+  assert.match(json.key, /JSON/)
+})

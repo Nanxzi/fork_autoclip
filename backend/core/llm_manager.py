@@ -150,6 +150,9 @@ class LLMManager:
             "infistar_api_key": "",
             "api88_api_key": "",
             "apimart_api_key": "",
+            "cometapi_api_key": "",
+            "novita_api_key": "",
+            "poyo_api_key": "",
             "seed_api_key": "",
             "model_name": "qwen-plus",
             "chunk_size": 5000,
@@ -178,6 +181,9 @@ class LLMManager:
                             "infistar_api_key": api_keys.get("infistar", ""),
                             "api88_api_key": api_keys.get("api88", ""),
                             "apimart_api_key": api_keys.get("apimart", ""),
+                            "cometapi_api_key": api_keys.get("cometapi", ""),
+                            "novita_api_key": api_keys.get("novita", ""),
+                            "poyo_api_key": api_keys.get("poyo", ""),
                             "seed_api_key": api_keys.get("seed", ""),
                             "model_name": api.get("api_model", "qwen-plus")
                         })
@@ -204,6 +210,12 @@ class LLMManager:
             except Exception as e:
                 logger.warning(f"加载设置文件失败: {sanitize_exception_text(e)}")
         
+        # The settings editor can migrate inactive, explicitly saved accounts. Do not
+        # turn keys supplied only by the process environment into persisted accounts.
+        self.stored_legacy_providers = tuple(
+            field.removesuffix("_api_key") for field in self._ENV_KEY_FALLBACKS
+            if isinstance(default_settings.get(field), str) and default_settings[field].strip()
+        )
         self._apply_env_fallbacks(default_settings)
         self._apply_local_preset(default_settings)
         self._apply_cloud_preset(default_settings)
@@ -287,6 +299,9 @@ class LLMManager:
         "infistar_api_key": ("API_INFISTAR_API_KEY", "INFISTAR_API_KEY"),
         "api88_api_key": ("API_API88_API_KEY", "API88_API_KEY"),
         "apimart_api_key": ("API_APIMART_API_KEY", "APIMART_API_KEY"),
+        "cometapi_api_key": ("API_COMETAPI_API_KEY", "COMETAPI_API_KEY"),
+        "novita_api_key": ("API_NOVITA_API_KEY", "NOVITA_API_KEY"),
+        "poyo_api_key": ("API_POYO_API_KEY", "POYO_API_KEY"),
         "seed_api_key": ("API_SEED_API_KEY", "ARK_API_KEY", "VOLCENGINE_API_KEY", "DOUBAO_API_KEY"),
     }
 
@@ -348,6 +363,9 @@ class LLMManager:
             else:
                 api_key = self._get_api_key_for_provider(provider_type)
             provider_kwargs = self._get_provider_kwargs(provider_type)
+            from backend.core.gemini_transport import is_official_gemini
+            if is_official_gemini(self.settings.get('connection_provider'), provider_kwargs.get('base_url', '')):
+                provider_type = ProviderType.GEMINI
 
             # 自建 OpenAI 兼容服务（Ollama / vLLM 等）常常不需要 key，有 base_url 就够
             if api_key or (provider_type == ProviderType.OPENAI and provider_kwargs.get("base_url")):
@@ -421,7 +439,8 @@ class LLMManager:
             return None
         if not model:
             return None
-        return {"base_url": base, "api_key": key or "", "model": model}
+        return {"base_url": base, "api_key": key or "", "model": model,
+                "provider": s.get('connection_provider') or provider}
     
     def _get_api_key_for_provider(self, provider_type: ProviderType) -> Optional[str]:
         """获取指定提供商的API密钥"""
@@ -584,7 +603,8 @@ class LLMManager:
         saved = str(info.get("model") or getattr(provider, "model_name", "") or "").strip()
         asked = str(override).strip() if isinstance(override, str) and str(override).strip() else saved
         catalog, base, key = self._analysis_endpoint(route)
-        cached = remembered_model(catalog, base, key, asked) if asked else None
+        allow_substitute = route.settings.get("model_source") != "user"
+        cached = remembered_model(catalog, base, key, asked, purpose="analysis") if asked and allow_substitute else None
         if cached:
             override = cached
         sent = cached or asked
@@ -592,6 +612,8 @@ class LLMManager:
             try:
                 response, chosen = self._invoke_text(route, prompt, input_data, override, kwargs)
             except Exception as error:
+                if not allow_substitute:
+                    raise
                 response, chosen = self._retry_missing_text_model(
                     error, route, prompt, input_data, kwargs, asked=asked, sent=sent,
                 )

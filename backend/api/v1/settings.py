@@ -51,10 +51,37 @@ def get_ai_models():
     return ai_models.public(ai_models.for_editing())
 
 
+@router.get('/sponsor-promo')
+def get_sponsor_promo(
+    trigger: Optional[Literal['startup', 'settings', 'interval', 'resume']] = None,
+    after: int = 0,
+    wait: float = 0,
+    locale: Optional[str] = None,
+):
+    """Chooser order and service notices. Does not read or write model settings.
+
+    ``wait`` is one bounded read for a revision newer than ``after``. It does not start another fetch.
+    """
+    from backend.core.sponsor_promo_client import get_client
+    client = get_client()
+    if wait > 0:
+        return client.wait_for_change(after, min(wait, 3), locale=locale)
+    return client.view(trigger=trigger or 'settings', locale=locale)
+
+
+class ModelSettingsUpdate(ai_models.ModelSettings):
+    edited_fields: set[str] | None = None
+
+
 @router.put('/ai-models')
-def put_ai_models(body: ai_models.ModelSettings):
+def put_ai_models(body: ModelSettingsUpdate):
     try:
-        return ai_models.save(body)
+        saved = ai_models.save(body, edited_fields=body.edited_fields)
+        from backend.core import quota_precheck
+        quota_precheck.clear_cache()
+        return saved
+    except ai_models.SettingsConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         from backend.core.log_redaction import redact_text
         raise HTTPException(status_code=422, detail=redact_text(str(exc))) from exc
@@ -207,22 +234,41 @@ def test_connection_assignment(body: ConnectionTestRequest):
                 probe_kind=probe,
                 language=body.language,
             )
+        if result.ok:
+            from backend.core import quota_precheck
+            quota_precheck.clear_cache()
         if (body.vision or body.purpose == 'vision') and body.purpose in ('analysis', 'vision') and result.ok:
             from backend.services.studio.vision_settings import test, VisionSettingsInput
-            from backend.core.connection_test_codes import vision_error_code
+            from backend.core.connection_test_codes import safe_http_status, vision_error_code
+            from backend.core.failure_codes import UserFacingError
+            from backend.services.studio.intelligence import VisionRequestError
+            from backend.services.provider_validation import VISION_BLOCK_MESSAGE
             endpoint = ai_models.chat_endpoint(connection, body.model)
             from backend.services.studio.failure_identity import connection_identity
             from backend.services.studio.vision_settings import testing_identity
             # the tested connection's own identity, never inferred from its hostname.
-            with testing_identity(connection_identity(connection, body.model)):
-                vision = test(VisionSettingsInput(mode='custom', **endpoint))
-            if not (vision.get('success') or vision.get('ok')):
-                from backend.core.upstream_errors import hint_key_for
+            vision = None
+            vision_status = None
+            try:
+                with testing_identity(connection_identity(connection, body.model)):
+                    vision = test(VisionSettingsInput(mode='custom', **endpoint))
+            except VisionRequestError as exc:
+                vision_status = exc.http_status
+                if (
+                    exc.http_status in (401, 402, 403, 429)
+                    or (exc.http_status is not None and 500 <= exc.http_status <= 599)
+                    or exc.code in ('timeout', 'connection')
+                ):
+                    raise
+            except (UserFacingError, ValueError):
+                vision = {'ok': False}
+            if not (isinstance(vision, dict) and (vision.get('success') or vision.get('ok'))):
                 payload = result.as_api()
                 payload.update(
                     success=False, ok=False, result='failed',
-                    error_type='unknown', hint_key=hint_key_for('unknown'),
-                    error_code=vision_error_code(vision), http_status=None, config_source=source,
+                    error_type='vision_unsupported', hint_key=VISION_BLOCK_MESSAGE,
+                    error_code=vision_error_code(vision),
+                    http_status=safe_http_status(vision_status), config_source=source,
                 )
                 return payload
         return {**result.as_api(), 'config_source': source}
@@ -284,6 +330,9 @@ class ApiKeys(BaseModel):
     infistar: str = Field(default="", description="Infistar 无限星河 API密钥")
     api88: str = Field(default="", description="88API API密钥")
     apimart: str = Field(default="", description="APIMart API密钥")
+    cometapi: str = Field(default="", description="CometAPI API密钥")
+    novita: str = Field(default="", description="Novita AI API密钥")
+    poyo: str = Field(default="", description="PoYo AI API密钥")
     seed: str = Field(default="", description="火山方舟 Seed / 豆包 API密钥")
     jimeng_access: str = Field(default="", description="即梦AI访问密钥")
     jimeng_secret: str = Field(default="", description="即梦AI秘密密钥")
@@ -540,6 +589,9 @@ async def get_settings():
                     infistar="",
                     api88="",
                     apimart="",
+                    cometapi="",
+                    novita="",
+                    poyo="",
                     seed="",
                     jimeng_access="",  # 默认值
                     jimeng_secret=""   # 默认值
@@ -977,6 +1029,9 @@ def _saved_provider_api_key(settings: DesktopSettings, provider: str) -> str:
         "infistar": keys.infistar,
         "api88": keys.api88,
         "apimart": keys.apimart,
+        "cometapi": keys.cometapi,
+        "novita": keys.novita,
+        "poyo": keys.poyo,
         "seed": keys.seed,
     }.get((provider or "").strip().lower(), "") or ""
 

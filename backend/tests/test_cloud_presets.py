@@ -89,16 +89,16 @@ def test_manager_uses_seed_ark_key_not_openai(fake_openai, tmp_path):
 
 def test_curated_lists_drop_retired_aliases():
     assert "gpt-4o" not in CLOUD_PRESETS
-    assert set(CLOUD_PRESETS) == {"deepseek", "seed", "kimi", "glm", "grok", "infistar", "api88", "apimart"}
+    assert set(CLOUD_PRESETS) == {"deepseek", "seed", "kimi", "glm", "grok", "infistar", "api88", "apimart", "cometapi", "novita", "poyo"}
 
 
 def test_infistar_sponsor_preset_uses_gateway_and_own_key(fake_openai, tmp_path):
     provider, url, preset = resolve_cloud_preset("infistar")
     assert provider == "openai"
     assert url == "https://infistar.cc/v1"
-    # 多模型网关不预设型号；专属注册链接带推广参数
+    # 多模型网关不预设型号，也不再带赞助注册链接。
     assert preset.default_model == ""
-    assert "aff=" in preset.docs_url
+    assert "aff=" not in (preset.docs_url or "")
 
     settings = tmp_path / "settings.json"
     settings.write_text(
@@ -126,9 +126,9 @@ def test_api88_sponsor_preset_uses_gateway_and_own_key(fake_openai, tmp_path):
     provider, url, preset = resolve_cloud_preset("api88")
     assert provider == "openai"
     assert url == "https://api.88api.ai/v1"
-    # 多模型网关不预设型号；专属注册链接带推广参数
+    # 多模型网关不预设型号，也不再带赞助注册链接。
     assert preset.default_model == ""
-    assert "aff=" in preset.docs_url
+    assert preset.docs_url == ""
 
     settings = tmp_path / "settings.json"
     settings.write_text(

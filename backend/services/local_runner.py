@@ -25,7 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-PROVIDER_CHOICES = ("dashscope", "openai", "gemini", "deepseek", "seed", "kimi", "glm", "grok", "infistar", "api88", "apimart", "ollama", "lmstudio")
+PROVIDER_CHOICES = ("dashscope", "openai", "gemini", "deepseek", "seed", "kimi", "glm", "grok", "infistar", "api88", "apimart", "cometapi", "novita", "poyo", "ollama", "lmstudio")
 
 
 # ---------------------------------------------------------------- environment ---
@@ -151,7 +151,7 @@ def configure_llm(override: LLMOverride) -> Dict[str, Any]:
                 "dashscope": "dashscope_api_key", "openai": "openai_api_key",
                 "gemini": "gemini_api_key", "siliconflow": "siliconflow_api_key",
                 "deepseek": "deepseek_api_key",
-                "kimi": "kimi_api_key", "glm": "glm_api_key", "grok": "grok_api_key", "infistar": "infistar_api_key", "api88": "api88_api_key", "apimart": "apimart_api_key",
+                "kimi": "kimi_api_key", "glm": "glm_api_key", "grok": "grok_api_key", "infistar": "infistar_api_key", "api88": "api88_api_key", "apimart": "apimart_api_key", "cometapi": "cometapi_api_key", "novita": "novita_api_key", "poyo": "poyo_api_key",
                 "seed": "seed_api_key",
             }.get(provider)
             if key_field:
@@ -263,10 +263,15 @@ def _register_project(req: RunRequest, video_path: Path) -> None:
             video_path=str(video_path),
             thumbnail=thumbnail,
             processing_config={"source": "cli"},
-            project_metadata={"source_url": None, "via": "cli", "original_video": str(req.video)},
+            project_metadata={"source_url": None, "via": "cli", "original_video": str(req.video), "input_origin": "file"},
         )
         db.add(project)
         db.commit()
+        try:
+            from backend.services.diagnostics.source import record_input_origin
+            record_input_origin(str(project.id), "file")
+        except Exception:  # noqa: BLE001 - CLI import still proceeds if the diagnostics note cannot be written
+            logger.warning("input origin was not recorded", exc_info=True)
     finally:
         db.close()
 

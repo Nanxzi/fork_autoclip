@@ -10,6 +10,15 @@
     "api.88api.ai": "api88",
     "apimart.ai": "apimart",
     "api.apimart.ai": "apimart",
+    "cometapi.com": "cometapi",
+    "api.cometapi.com": "cometapi",
+    "www.cometapi.com": "cometapi",
+    "novita.ai": "novita",
+    "api.novita.ai": "novita",
+    "novita-ai": "novita",
+    "poyo.ai": "poyo",
+    "api.poyo.ai": "poyo",
+    "poyo-ai": "poyo",
     "deepseek-ai": "deepseek",
     "moonshot": "kimi",
     "moonshotai-cn": "kimi",
@@ -73,9 +82,9 @@
       "kind": "preset",
       "candidates": {
         "analysis": [
+          "deepseek-v4-flash",
           "qwen3.8-flash",
-          "gemini-3.8-flash",
-          "deepseek-v4-flash"
+          "gemini-3.8-flash"
         ],
         "vision": [
           "qwen3.8-flash",
@@ -91,14 +100,14 @@
       "ui_name": "88API Token聚合平台",
       "short_name": "88API",
       "catalog_label": "88API",
-      "group": "recommended",
+      "group": "popular",
       "protocol": "openai-completions",
       "base_url": "https://api.88api.ai/v1",
       "capabilities": [
         "language",
         "image"
       ],
-      "docs_url": "https://88api.ai/sign-up?aff=2PIc",
+      "docs_url": "",
       "locked": true,
       "accepted_hosts": [
         "88api.ai",
@@ -115,15 +124,8 @@
       "legacy_ui": true,
       "api_key_setting": "api88_api_key",
       "placeholder": "sk-…",
-      "hint": "赞助合作伙伴。聚合语言、图片与语音模型，接口地址已预设。",
-      "cloud_hint": "赞助合作伙伴。新用户注册赠送体验额度，站内提供人工客服。",
-      "sponsor": {
-        "register_url": "https://88api.ai/sign-up?aff=2PIc",
-        "guide_url": "https://github.com/zhouxiaoka/autoclip/blob/main/docs/88API_SETUP.md",
-        "offer": "新用户体验额度",
-        "description": "新用户通过专属链接注册可获体验额度；站内提供人工客服。",
-        "topup_url": "https://88api.ai/"
-      },
+      "hint": "OpenAI 兼容网关。使用已保存的接口地址和密钥。",
+      "cloud_hint": "OpenAI 兼容网关。使用已保存的接口地址和密钥。",
       "kind": "preset",
       "candidates": {
         "analysis": [
@@ -149,7 +151,7 @@
       "ui_name": "Infistar 无限星河",
       "short_name": "Infistar",
       "catalog_label": "Infistar",
-      "group": "recommended",
+      "group": "popular",
       "protocol": "openai-completions",
       "base_url": "https://infistar.cc/v1",
       "accepted_hosts": [
@@ -162,7 +164,7 @@
         "language",
         "image"
       ],
-      "docs_url": "https://www.infistar.cc/register?aff=XLK3BCM6&ref_source=link",
+      "docs_url": "",
       "locked": true,
       "default_model": "",
       "catalog": [],
@@ -178,15 +180,8 @@
       "legacy_ui": true,
       "api_key_setting": "infistar_api_key",
       "placeholder": "sk-…",
-      "hint": "赞助合作伙伴。一个 Key 调用 Claude、GPT、Gemini、DeepSeek 等模型，接口地址已预设。",
-      "cloud_hint": "赞助合作伙伴。一个 Key 调 Claude / GPT / Gemini / DeepSeek 等模型，专属链接注册可领体验额度。",
-      "sponsor": {
-        "register_url": "https://www.infistar.cc/register?aff=XLK3BCM6&ref_source=link",
-        "guide_url": "https://github.com/zhouxiaoka/autoclip/blob/main/docs/INFISTAR_SETUP.md",
-        "offer": "$5 免费体验额度",
-        "description": "通过专属链接注册，可领取 $5 免费体验额度。",
-        "topup_url": "https://www.infistar.cc/"
-      },
+      "hint": "OpenAI 兼容网关。使用已保存的接口地址和密钥。",
+      "cloud_hint": "OpenAI 兼容网关。使用已保存的接口地址和密钥。",
       "kind": "preset",
       "candidates": {
         "analysis": [
@@ -210,6 +205,132 @@
       },
       "auth": "api_key",
       "billing_probe": "new_api"
+    },
+    "cometapi": {
+      "display_name": "CometAPI",
+      "ui_name": "CometAPI",
+      "short_name": "CometAPI",
+      "catalog_label": "CometAPI",
+      "group": "popular",
+      "protocol": "openai-completions",
+      "base_url": "https://api.cometapi.com/v1",
+      "accepted_hosts": [
+        "api.cometapi.com"
+      ],
+      "capabilities": [
+        "language",
+        "image",
+        "video"
+      ],
+      "docs_url": "https://api.cometapi.com/",
+      "referral": "https://www.cometapi.com/?ref=kris",
+      "locked": true,
+      "default_model": "",
+      "catalog": [],
+      "catalog_image": [],
+      "openai_compat_remap": true,
+      "legacy_ui": true,
+      "api_key_setting": "cometapi_api_key",
+      "placeholder": "sk-…",
+      "hint": "CometAPI 聚合网关。一个 Key 调用多款主流模型，接口地址已预设。",
+      "cloud_hint": "CometAPI 聚合网关。一个 Key 调用多款主流模型，接口地址已预设。",
+      "kind": "preset",
+      "candidates": {
+        "analysis": [
+          "deepseek-chat",
+          "gpt-4o-mini",
+          "gemini-2.5-flash"
+        ],
+        "vision": [
+          "gpt-4o-mini",
+          "gemini-2.5-flash"
+        ],
+        "asr": [],
+        "image": []
+      },
+      "auth": "api_key"
+    },
+    "novita": {
+      "display_name": "Novita AI",
+      "ui_name": "Novita AI",
+      "short_name": "Novita AI",
+      "catalog_label": "Novita AI",
+      "group": "popular",
+      "protocol": "openai-completions",
+      "base_url": "https://api.novita.ai/v3/openai",
+      "accepted_hosts": [
+        "api.novita.ai"
+      ],
+      "capabilities": [
+        "language"
+      ],
+      "docs_url": "https://novita.ai/settings/key-management",
+      "referral": "https://novita.ai/?ref=nzvindf&utm_source=affiliate",
+      "locked": true,
+      "default_model": "",
+      "catalog": [],
+      "catalog_image": [],
+      "openai_compat_remap": true,
+      "legacy_ui": true,
+      "api_key_setting": "novita_api_key",
+      "placeholder": "sk_…",
+      "hint": "Novita AI 推理平台。高性价比主流开源与闭源模型，接口地址已预设。",
+      "cloud_hint": "Novita AI 推理平台。高性价比主流开源与闭源模型，接口地址已预设。",
+      "kind": "preset",
+      "candidates": {
+        "analysis": [
+          "deepseek/deepseek-v3-0324",
+          "qwen/qwen-2.5-72b-instruct"
+        ],
+        "vision": [],
+        "asr": [],
+        "image": []
+      },
+      "auth": "api_key"
+    },
+    "poyo": {
+      "display_name": "PoYo AI",
+      "ui_name": "PoYo AI",
+      "short_name": "PoYo AI",
+      "catalog_label": "PoYo AI",
+      "group": "popular",
+      "protocol": "openai-completions",
+      "base_url": "https://api.poyo.ai/v1",
+      "accepted_hosts": [
+        "api.poyo.ai"
+      ],
+      "capabilities": [
+        "language",
+        "image",
+        "video"
+      ],
+      "docs_url": "https://poyo.ai/",
+      "referral": "https://poyo.ai/?affiliate_code=christ520482&open_signup=1",
+      "locked": true,
+      "default_model": "",
+      "catalog": [],
+      "catalog_image": [],
+      "openai_compat_remap": true,
+      "legacy_ui": true,
+      "api_key_setting": "poyo_api_key",
+      "placeholder": "sk-…",
+      "hint": "PoYo AI 聚合网关。一个 Key 调用语言、图像和视频模型，接口地址已预设。",
+      "cloud_hint": "PoYo AI 聚合网关。一个 Key 调用语言、图像和视频模型，接口地址已预设。",
+      "kind": "preset",
+      "candidates": {
+        "analysis": [
+          "deepseek-chat",
+          "gpt-4o-mini",
+          "gemini-2.5-flash"
+        ],
+        "vision": [
+          "gpt-4o-mini",
+          "gemini-2.5-flash"
+        ],
+        "asr": [],
+        "image": []
+      },
+      "auth": "api_key"
     },
     "deepseek": {
       "display_name": "DeepSeek",
@@ -459,7 +580,7 @@
     "minimax-cn": {
       "display_name": "MiniMax",
       "short_name": "MiniMax",
-      "group": "popular",
+      "group": "more",
       "protocol": "anthropic-messages",
       "base_url": "https://api.minimaxi.com/anthropic",
       "docs_url": "https://platform.minimaxi.com",
@@ -1165,7 +1286,7 @@
       "base_url": "https://qianfan.baidubce.com/v2",
       "docs_url": "https://console.bce.baidu.com/qianfan",
       "api_key_setting": "qianfan_api_key",
-      "hint": "百度千帆。国内公开文档常见地址，上线前须核实。",
+      "hint": "百度千帆。国内 OpenAI 兼容接口。",
       "kind": "preset",
       "candidates": {
         "analysis": [],
@@ -1187,7 +1308,7 @@
       "base_url": "https://api.hunyuan.cloud.tencent.com/v1",
       "docs_url": "https://cloud.tencent.com/product/hunyuan",
       "api_key_setting": "hunyuan_api_key",
-      "hint": "腾讯混元。国内公开文档常见地址，上线前须核实。",
+      "hint": "腾讯混元。国内 OpenAI 兼容接口。",
       "kind": "preset",
       "candidates": {
         "analysis": [],
@@ -1238,19 +1359,23 @@
       "bailian.console.aliyun.com",
       "chat.deepseek.com",
       "chatgpt.com",
+      "cometapi.com",
       "console.cloud.google.com",
       "console.volcengine.com",
       "console.x.ai",
       "dashscope.console.aliyun.com",
       "deepseek.com",
       "makersuite.google.com",
+      "novita.ai",
       "openai.com",
       "platform.deepseek.com",
       "platform.moonshot.cn",
       "platform.openai.com",
+      "poyo.ai",
       "www.88api.ai",
       "www.aliyun.com",
       "www.apimart.ai",
+      "www.cometapi.com",
       "www.deepseek.com",
       "www.infistar.ai",
       "www.infistar.cc",

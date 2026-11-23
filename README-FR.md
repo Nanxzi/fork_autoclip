@@ -21,7 +21,7 @@ L’app est gratuite ; les modèles cloud sont facturés à l’usage. Ajustez d
 
 **[Site](https://zhouxiaoka.github.io/autoclip_intro/)** · **[Télécharger le bureau](https://github.com/zhouxiaoka/autoclip/releases/latest)** · [Cas](https://zhouxiaoka.github.io/autoclip_intro/cases/) · [Recherche](docs/research/2026-10-what-drives-views/article-en.md) · [Démarrage](#démarrage) · [Docs](#documentation) · [Signaler](https://github.com/zhouxiaoka/autoclip/issues/new/choose)
 
-[简体中文](README.md) · [English](README-EN.md) · [日本語](README-JA.md) · [한국어](README-KO.md) · [Español](README-ES.md) · [Português](README-PT.md) · [Русский](README-RU.md) · **Français**
+[简体中文](README.md) · [English](README-EN.md) · [日本語](README-JA.md) · [한국어](README-KO.md) · [Español](README-ES.md) · [Português](README-PT.md) · [Русский](README-RU.md) · **Français** · [Türkçe](README-TR.md)
 
 </div>
 
@@ -211,7 +211,7 @@ Coupe et rendu restent sur votre ordinateur. L’analyse cloud envoie les sous-t
 3. **Lien et plateforme.** Essayez une interview ou un podcast sous-titré et choisissez le format vertical. Sinon, préparez Whisper / SenseVoice ou configurez la transcription cloud dans Réglages.
 4. **Vérifiez et enregistrez.** Contrôlez sous-titres, cadrage et contenu, puis téléchargez le kit ou liez un compte pour publier. Générez les alternatives au besoin.
 
-Intel Mac / Linux peuvent utiliser Docker ou CLI. Voir le [guide d’installation](docs/USER_INSTALLATION_GUIDE.en.md) et la [dernière Release](https://github.com/zhouxiaoka/autoclip/releases/latest) pour les prérequis, le premier lancement et le périmètre validé.
+Intel Mac / Linux peuvent utiliser Docker ou CLI. Les installateurs bureau ne sont pas encore signés ([#119](https://github.com/zhouxiaoka/autoclip/issues/119)), ce qui peut déclencher Windows SmartScreen ou un avertissement antivirus ; chaque paquet est compilé publiquement via GitHub Actions (`Desktop Build`) et inclut `build-provenance.json` pour vérifier le SHA-256 (Docker, CLI et exécution depuis les sources restent disponibles). Voir le [guide d’installation](docs/USER_INSTALLATION_GUIDE.en.md) et la [dernière Release](https://github.com/zhouxiaoka/autoclip/releases/latest) pour les prérequis, le premier lancement et le périmètre validé.
 
 [Guide d’installation](docs/USER_INSTALLATION_GUIDE.en.md) · [Dépannage](docs/FAQ.en.md)
 
@@ -295,31 +295,6 @@ Dans Docker, `localhost` est le conteneur. Pointez vers une adresse hôte joigna
 <table>
   <tr>
     <td align="center" width="140">
-      <a href="https://88api.ai/sign-up?aff=2PIc"><img src="docs/sponsors/88api-logo.jpg" alt="88API" width="88"></a><br>
-      <a href="https://88api.ai/sign-up?aff=2PIc"><strong>88API</strong></a>
-    </td>
-    <td>
-      Merci à <strong>88API</strong> de sponsoriser AutoClip ! La plateforme réunit GPT, Claude, Gemini, Grok, DeepSeek, Kimi et GLM pour analyser les transcriptions, sélectionner les temps forts et générer des titres.<br>
-      🎨 <strong>Multimédia</strong> : Modèles d’image, de vidéo et d’audio, dont GPT-Image, Seedance, Veo, MiniMax Hailuo H3, Kling, Whisper et TTS. AutoClip utilise les API compatibles d’analyse, de couverture et de transcription.<br>
-      🏷️ <strong>Service et facturation</strong> : Le partenaire indique être exploité par une société à l’étranger et proposer une assistance humaine, des factures et un ratio de recharge de 1:1 ; les conditions de la plateforme s’appliquent.<br>
-      🎁 <strong>Nouveaux utilisateurs</strong> : Recevez un crédit d’essai pour tester les modèles via le <a href="https://88api.ai/sign-up?aff=2PIc">lien de parrainage</a>, selon les conditions de la promotion. <a href="docs/88API_SETUP.en.md">Guide de configuration (anglais)</a>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="140">
-      <a href="https://www.infistar.cc/register?aff=XLK3BCM6&amp;ref_source=link"><img src="docs/sponsors/infistar-logo.svg" alt="Infistar" width="88"></a><br>
-      <a href="https://www.infistar.cc/register?aff=XLK3BCM6&amp;ref_source=link"><strong>Infistar.cc</strong></a>
-    </td>
-    <td>
-      Merci à <strong>Infistar.cc</strong> de sponsoriser AutoClip ! Son API multimodèle peut servir à analyser les transcriptions de longues vidéos, sélectionner les temps forts et générer des titres.<br>
-      ⚙️ <strong>Configuration compatible</strong> : Dans AutoClip, choisissez le fournisseur compatible avec OpenAI et renseignez la Base URL, votre clé API et un modèle disponible.<br>
-      🧩 <strong>Choix des modèles</strong> : Le partenaire propose Claude, GPT, Gemini, DeepSeek et d’autres familles. Choisissez des modèles prenant en charge le point d’accès compatible pour comparer l’analyse des transcriptions et la sélection des temps forts.<br>
-      🏷️ <strong>Tarifs et services</strong> : Selon le partenaire, certains modèles sont proposés dès <strong>1 % du tarif officiel</strong>, avec facturation en RMB, émission de factures et vérification de l’authenticité des modèles. Consultez la plateforme pour les modèles, tarifs et conditions en vigueur.<br>
-      🎁 <strong>Offre AutoClip</strong> : Les nouveaux utilisateurs peuvent recevoir <strong>$5 de crédit d’essai</strong> via le <a href="https://www.infistar.cc/register?aff=XLK3BCM6&amp;ref_source=link">lien de parrainage</a>, selon les conditions de la promotion. <a href="docs/INFISTAR_SETUP.en.md">Guide de configuration (anglais)</a>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="140">
       <a href="https://go.apimart.ai/tw-autoclip"><img src="docs/sponsors/apimart.png" alt="APIMart" width="88"></a><br>
       <a href="https://go.apimart.ai/tw-autoclip"><strong>APIMart</strong></a>
     </td>
@@ -327,7 +302,7 @@ Dans Docker, `localhost` est le conteneur. Pointez vers une adresse hôte joigna
       Merci à <strong>APIMart</strong> de sponsoriser ce projet ! <strong>APIMart</strong> est une plateforme d'API à faible coût pour la génération d'images et de vidéos par IA — GPT-Image-2 à partir de <strong>$0.006/image</strong>, plus de <strong>160</strong> images par dollar. Une seule API asynchrone couvre l'image et la vidéo : soumettez une tâche, obtenez un ID, puis récupérez les résultats par polling ou callback. Traitez des dizaines de milliers d'images par lot sans délai d'expiration, et changez de modèle sans modifier le code. Paiement à l'usage, sans frais mensuels — <a href="https://go.apimart.ai/tw-autoclip">inscrivez-vous ici</a> pour commencer.
     </td>
   </tr>
-</table>
+  </table>
 
 ## FAQ
 
