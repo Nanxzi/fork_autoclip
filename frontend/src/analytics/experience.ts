@@ -17,7 +17,7 @@ const enums: Record<string, readonly string[]> = {
   reason: ['setup_required', 'provider', 'model', 'key'], config_source: ['preset', 'customized'], mode: ['initial', 'update'],
   provider: TELEMETRY_PROVIDERS, // same generated enum as success-rate events (every preset)
   source: ['live', 'cache', 'catalog'], outcome: ['success', 'error', 'blocked', 'unknown'],
-  resolution: ['created', 'reused'], material_origin: ['sample', 'user', 'unknown'],
+  resolution: ['created', 'reused'], material_origin: ['sample', 'user', 'obs', 'unknown'],
   analysis_mode: ['auto', 'subtitle', 'visual'], transcription_mode: ['whisper_local', 'sensevoice_local', 'cloud', 'unknown'],
   cover_mode: ['ai', 'frame'], capability: ['text', 'multimodal', 'auto'],
   analysis_source: ['preset', 'user', 'none'],
@@ -53,8 +53,8 @@ export function trackExperience(event: ExperienceEvent, properties: Record<strin
 export const CAPTURE_QUIET_MS = 1500
 
 /** Connection fields that should rediscover models. Not a telemetry payload. */
-export function connectionSignature(value: { connections?: Array<{ id?: string; provider?: string; base_url?: string; api_key?: string | null; image_base_url?: string }> } | null | undefined) {
-  return JSON.stringify((value?.connections || []).map(c => [c.id, c.provider, c.base_url, c.api_key ?? '', c.image_base_url]))
+export function connectionSignature(value: { connections?: Array<{ id?: string; provider?: string; base_url?: string; api_key?: string | null; image_base_url?: string; http_headers?: Record<string, string> | null; _http_headers_text?: string; reasoning_effort?: string | null; extra_body?: Record<string, unknown> | null; _extra_body_text?: string }> } | null | undefined) {
+  return JSON.stringify((value?.connections || []).map(c => [c.id, c.provider, c.base_url, c.api_key ?? '', c.image_base_url, c.http_headers, c._http_headers_text, c.reasoning_effort, c.extra_body, c._extra_body_text]))
 }
 
 /** trigger=load, manual, and provider_change always report. trigger=edit reports only after the loaded document changes. */

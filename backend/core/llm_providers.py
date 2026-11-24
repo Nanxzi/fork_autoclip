@@ -65,7 +65,9 @@ class LLMProvider(ABC):
 
         def wrapped(self, prompt: str, input_data: Any = None, **call_kwargs):
             from backend.core.llm_telemetry import observe_provider_call
-            return observe_provider_call(self, raw, prompt, input_data, **call_kwargs)
+            from backend.services.obs.billing import is_obs
+            method = LLMProvider._obs_call if is_obs() else raw
+            return observe_provider_call(self, method, prompt, input_data, **call_kwargs)
 
         wrapped._llm_telemetry = True  # type: ignore[attr-defined]
         cls.call = wrapped  # type: ignore[method-assign]
@@ -74,6 +76,26 @@ class LLMProvider(ABC):
         self.api_key = api_key
         self.model_name = model_name
         self.kwargs = kwargs
+
+    def _obs_call(self, prompt, input_data=None, **kwargs):
+        from backend.services.obs.billing import CallPaused, chat
+        from backend.core.llm_stream import from_chat_json
+        from backend.core.provider_endpoint import official_chat_url
+        base = getattr(self, 'base_url', '')
+        if not base:
+            if isinstance(self, OpenAIProvider):
+                base = OPENAI_OFFICIAL_BASE_URL
+            elif isinstance(self, GeminiProvider):
+                base = official_chat_url('gemini') or ''
+        if not base:
+            raise CallPaused('OBS requires a configured chat endpoint', code='bad_endpoint')
+        model = self.request_model()
+        payload = token_param_kwargs(model, base, guarded_chat_kwargs(base, {
+            **kwargs, 'stream': True, 'model': model,
+            'messages': [{'role': 'user', 'content': self._build_full_input(prompt, input_data)}],
+        }))
+        result = from_chat_json(chat('analysis', base, payload, self.api_key, _http_timeout(180)))
+        return LLMResponse(result.content, result.usage, model, result.finish_reason)
 
     def request_model(self) -> str:
         """Model for this request only. Never writes ``self.model_name``."""
@@ -602,8 +624,9 @@ class OpenAIProvider(LLMProvider):
     def __init__(self, api_key: str, model_name: str = "gpt-4o-mini", **kwargs):
         super().__init__(api_key, model_name, **kwargs)
         self.base_url = normalize_base_url(kwargs.get("base_url") or os.getenv("OPENAI_BASE_URL"))
+        self._configured_api_key = api_key
         self.is_custom_endpoint = bool(self.base_url) and self.base_url != OPENAI_OFFICIAL_BASE_URL
-        if not api_key and self.is_custom_endpoint:
+        if not api_key and (self.is_custom_endpoint or kwargs.get('http_headers')):
             api_key = OPENAI_COMPATIBLE_PLACEHOLDER_KEY
             self.api_key = api_key
         try:
@@ -619,6 +642,18 @@ class OpenAIProvider(LLMProvider):
                 http_client = make_openai_http_client(self.base_url)
                 if http_client is not None:
                     client_kwargs["http_client"] = http_client
+            if kwargs.get('http_headers'):
+                import httpx
+                custom_headers = dict(kwargs['http_headers'])
+
+                def apply_headers(request):
+                    # Apply after the SDK builds its defaults; HTTPX replaces case-insensitively.
+                    if not self._configured_api_key:
+                        request.headers.pop('Authorization', None)  # no synthetic bearer for header-only auth
+                    request.headers.update(custom_headers)
+                # Custom authorization headers must not follow a redirect to another endpoint.
+                client_kwargs['http_client'] = httpx.Client(trust_env=not is_local_url(self.base_url), follow_redirects=False,
+                                                           event_hooks={'request': [apply_headers]})
             self.client = openai.OpenAI(**client_kwargs)
         except ImportError:
             raise ImportError("请安装openai: pip install openai")
@@ -628,11 +663,12 @@ class OpenAIProvider(LLMProvider):
         try:
             model = self.request_model()
             full_input = self._build_full_input(prompt, input_data)
-            payload = token_param_kwargs(model, self.base_url, guarded_chat_kwargs(self.base_url, {
+            from backend.core.custom_request_options import apply_chat_options
+            payload = token_param_kwargs(model, self.base_url, guarded_chat_kwargs(self.base_url, apply_chat_options({
                 "model": model,
                 "messages": [{"role": "user", "content": full_input}],
                 **{key: value for key, value in kwargs.items() if key != "stream"},
-            }))
+            }, getattr(self, 'kwargs', {}))))
             # A long think used to die on a silent socket. Stream when the host
             # can; a refusal or a single JSON body is assembled the same way.
             payload["stream"] = True

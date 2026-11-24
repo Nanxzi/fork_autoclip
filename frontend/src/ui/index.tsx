@@ -8,14 +8,14 @@ import { ConfigProvider } from 'antd'
 import './ac.css'
 
 /* ---------- Segmented ---------- */
-export interface SegmentedOption<T extends string> { value: T; label: React.ReactNode }
+export interface SegmentedOption<T extends string> { value: T; label: React.ReactNode; disabled?: boolean }
 export function Segmented<T extends string>({
   value, onChange, options, size, ariaLabel, className, disabled,
 }: { value: T; onChange: (v: T) => void; options: SegmentedOption<T>[]; size?: 'sm'; ariaLabel?: string; className?: string; disabled?: boolean }) {
   return (
     <div className={`ac-seg${size === 'sm' ? ' ac-seg--sm' : ''}${className ? ` ${className}` : ''}`} role="group" aria-label={ariaLabel}>
       {options.map((o) => (
-        <button key={o.value} type="button" disabled={disabled} aria-pressed={o.value === value} onClick={() => onChange(o.value)}>
+        <button key={o.value} type="button" disabled={disabled || o.disabled} aria-pressed={o.value === value} onClick={() => onChange(o.value)}>
           {o.label}
         </button>
       ))}
@@ -107,7 +107,8 @@ export const Dialog: React.FC<{
   description?: React.ReactNode
   footer?: React.ReactNode
   children?: React.ReactNode
-}> = ({ open, onClose, title, description, footer, children }) => {
+  className?: string
+}> = ({ open, onClose, title, description, footer, children, className = '' }) => {
   const dialogRef = React.useRef<HTMLDivElement>(null)
   const titleId = React.useId()
   const closeRef = React.useRef(onClose)
@@ -120,6 +121,9 @@ export const Dialog: React.FC<{
     ) || []).filter(element => element.getClientRects().length > 0)
     ;(focusable()[0] || dialogRef.current)?.focus()
     const onKey = (e: KeyboardEvent) => {
+      // A nested settings dialog owns Escape/Tab; its parent must stay open.
+      const dialogs = document.querySelectorAll('.ac-dialog[aria-modal="true"]')
+      if (dialogs[dialogs.length - 1] !== dialogRef.current) return
       const dropdownOpen = !!document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')
       if (e.key === 'Escape' && !dropdownOpen) closeRef.current()
       if (e.key !== 'Tab' || dropdownOpen) return
@@ -146,7 +150,7 @@ export const Dialog: React.FC<{
   return createPortal(
     <ConfigProvider theme={{ token: { zIndexPopupBase: 1300 } }}>
       <div className="ac-dialog-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
-        <div ref={dialogRef} className="ac-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+        <div ref={dialogRef} className={`ac-dialog${className ? ` ${className}` : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
           <h3 id={titleId}>{title}</h3>
           {description && <p>{description}</p>}
           <div style={{ marginTop: 18 }}>{children}</div>
@@ -166,6 +170,7 @@ const I: React.FC<{ d: string; size?: number; stroke?: number }> = ({ d, size = 
 )
 export const Icon = {
   Back: (p?: { size?: number }) => <I size={p?.size} d="M15 18l-6-6 6-6" />,
+  Edit: (p?: { size?: number }) => <I size={p?.size} d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />,
   Play: (p?: { size?: number }) => <I size={p?.size} d="M7 5v14l11-7z" />,
   Plus: (p?: { size?: number }) => <I size={p?.size} d="M12 5v14M5 12h14" />,
   Down: (p?: { size?: number }) => <I size={p?.size} d="M12 4v12m0 0l-5-5m5 5l5-5M4 20h16" />,
